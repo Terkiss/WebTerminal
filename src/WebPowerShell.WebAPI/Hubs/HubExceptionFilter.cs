@@ -28,7 +28,8 @@ namespace WebPowerShell.WebAPI.Hubs
                 _logger.LogError(ex, "An unhandled exception occurred while invoking hub method '{MethodName}' on hub '{HubName}'", 
                     context.HubMethodName, context.Hub.GetType().Name);
 
-                if (context.HubMethod.ReturnType == typeof(Task<HubResponse>))
+                if (context.HubMethod.ReturnType == typeof(Task<HubResponse>) ||
+                    context.HubMethod.ReturnType == typeof(ValueTask<HubResponse>))
                 {
                     return HubResponse.Fail(AppFailure.InternalError);
                 }

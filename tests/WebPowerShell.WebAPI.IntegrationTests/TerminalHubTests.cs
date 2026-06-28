@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -87,7 +88,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
         {
             Content = JsonContent.Create(loginCommand)
         };
-        request.Headers.Add("X-Forwarded-For", "127.0.0.1");
+        request.Headers.Add("X-Forwarded-For", $"127.0.0.{Random.Shared.Next(2, 254)}");
 
         var loginResponse = await client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
@@ -250,7 +251,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
         {
             Content = JsonContent.Create(loginCommand)
         };
-        request.Headers.Add("X-Forwarded-For", "127.0.0.1");
+        request.Headers.Add("X-Forwarded-For", $"127.0.0.{Random.Shared.Next(2, 254)}");
 
         var loginResponse = await client.SendAsync(request);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
@@ -292,6 +293,126 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             // Assert
             Assert.False(openResult.Success);
             Assert.Equal("InternalError", openResult.ErrorCode);
+        }
+        finally
+        {
+            await connection.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Scenario6_StreamingOutputRouting_ShouldSucceed()
+    {
+        // Arrange
+        var tabId = Guid.NewGuid();
+        var connection = await CreateAuthenticatedConnectionAsync("streamuser1", "CorrectPassword123!");
+
+        var startedTcs = new TaskCompletionSource<Guid>();
+        var outputTcs = new TaskCompletionSource<(Guid tabId, string content)>();
+        var completedTcs = new TaskCompletionSource<(Guid tabId, bool isSuccess)>();
+        var eventSequence = new ConcurrentQueue<string>();
+
+        connection.On<Guid>("CommandStarted", (id) =>
+        {
+            eventSequence.Enqueue("Started");
+            startedTcs.TrySetResult(id);
+        });
+        connection.On<Guid, string>("ReceiveOutput", (id, content) =>
+        {
+            eventSequence.Enqueue("Output");
+            outputTcs.TrySetResult((id, content));
+        });
+        connection.On<Guid, bool>("CommandCompleted", (id, success) =>
+        {
+            eventSequence.Enqueue("Completed");
+            completedTcs.TrySetResult((id, success));
+        });
+
+        try
+        {
+            // Open Tab
+            var openResult = await connection.InvokeAsync<HubResponse>("OpenTab", tabId);
+            Assert.True(openResult.Success);
+
+            // Act - Send Command
+            var sendResult = await connection.InvokeAsync<HubResponse>("SendCommand", tabId, "Write-Output 'StreamingHello'");
+            Assert.True(sendResult.Success);
+
+            // Assert
+            var startedTabId = await startedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(tabId, startedTabId);
+
+            var outputData = await outputTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(tabId, outputData.tabId);
+            Assert.Contains("StreamingHello", outputData.content);
+
+            var completedData = await completedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(tabId, completedData.tabId);
+            Assert.True(completedData.isSuccess);
+
+            // Sequential Order Verification
+            var sequenceList = eventSequence.ToArray();
+            Assert.Equal(new[] { "Started", "Output", "Completed" }, sequenceList);
+        }
+        finally
+        {
+            await connection.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Scenario7_StreamingErrorRouting_ShouldSucceed()
+    {
+        // Arrange
+        var tabId = Guid.NewGuid();
+        var connection = await CreateAuthenticatedConnectionAsync("streamuser2", "CorrectPassword123!");
+
+        var startedTcs = new TaskCompletionSource<Guid>();
+        var errorTcs = new TaskCompletionSource<(Guid tabId, string content)>();
+        var completedTcs = new TaskCompletionSource<(Guid tabId, bool isSuccess)>();
+        var eventSequence = new ConcurrentQueue<string>();
+
+        connection.On<Guid>("CommandStarted", (id) =>
+        {
+            eventSequence.Enqueue("Started");
+            startedTcs.TrySetResult(id);
+        });
+        connection.On<Guid, string>("ReceiveError", (id, content) =>
+        {
+            eventSequence.Enqueue("Error");
+            errorTcs.TrySetResult((id, content));
+        });
+        connection.On<Guid, bool>("CommandCompleted", (id, success) =>
+        {
+            eventSequence.Enqueue("Completed");
+            completedTcs.TrySetResult((id, success));
+        });
+
+        try
+        {
+            // Open Tab
+            var openResult = await connection.InvokeAsync<HubResponse>("OpenTab", tabId);
+            Assert.True(openResult.Success);
+
+            // Act - Send Command
+            var sendResult = await connection.InvokeAsync<HubResponse>("SendCommand", tabId, "Write-Error 'StreamingError'");
+            Assert.True(sendResult.Success);
+
+            // Assert
+            var startedTabId = await startedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(tabId, startedTabId);
+
+            var errorData = await errorTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(tabId, errorData.tabId);
+            Assert.Contains("StreamingError", errorData.content);
+
+            var completedData = await completedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(tabId, completedData.tabId);
+            Assert.False(completedData.isSuccess); // HadErrors is true, so completed is false
+
+            // Sequential Order Verification
+            var sequenceList = eventSequence.ToArray();
+            Assert.Equal(new[] { "Started", "Error", "Completed" }, sequenceList);
         }
         finally
         {

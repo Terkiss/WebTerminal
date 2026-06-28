@@ -1,10 +1,8 @@
 # MEMORY
 
 ## Current State Snapshot
-- **Focus**: Phase 4 (SignalR & Frontend Integration) 전체 구현 및 자율 루프 구동 개시.
-- **In Progress**: Milestone 9 (TerminalHub & Hub Authentication Setup)
+- **Focus**: Milestone 11 Rework (Real-Time Stream Event Routing) 최종 검증 및 기술 심판.
+- **In Progress**: Milestone 11 Rework 승인 완료.
 - **Next Steps**:
-  1. 주인님께 Phase 4 착수 및 Ralph Orchestrator 기동 사실 보고.
-  2. M9 ~ M12 전체 자율 완결 루프 전격 기동.
-- **Known Risks**:
-  - xterm.js와 SignalR 간의 버퍼 지연 현상 및 브라우저 TTY 렌더링 부하 제어 필요.
+  1. Milestone 12 (Frontend Integration or preparation for next actions) 검토.
+- **Known Risks**: None (M11 Rework 테스트 및 빌드 정상 완료).

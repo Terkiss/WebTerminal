@@ -156,9 +156,16 @@ namespace WebPowerShell.Infrastructure.PowerShell
                 RegisterStreamHandler(ps.Streams.Error, channel.Writer, PowerShellStreamType.Error, sessionId);
                 RegisterStreamHandler(ps.Streams.Warning, channel.Writer, PowerShellStreamType.Warning, sessionId);
                 RegisterStreamHandler(ps.Streams.Verbose, channel.Writer, PowerShellStreamType.Verbose, sessionId);
+                RegisterStreamHandler(ps.Streams.Debug, channel.Writer, PowerShellStreamType.Debug, sessionId);
+                RegisterStreamHandler(ps.Streams.Information, channel.Writer, PowerShellStreamType.Information, sessionId);
 
                 var settings = new PSInvocationSettings();
                 await ps.InvokeAsync<PSObject, PSObject>(null, output, settings, null, null);
+
+                if (ps.HadErrors)
+                {
+                    return Result<bool>.Success(false);
+                }
 
                 return Result<bool>.Success(true);
             }

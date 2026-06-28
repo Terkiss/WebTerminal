@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using WebPowerShell.Application.Common.Interfaces;
+using WebPowerShell.Application.Sessions.Common;
 using WebPowerShell.Domain.Common;
 
 namespace WebPowerShell.WebAPI.Hubs;
@@ -70,22 +71,55 @@ public class TerminalHub : Hub
             return HubResponse.Fail(AppFailure.Unauthorized);
         }
 
-        var result = await _sessionService.ExecuteCommandAsync(
-            userId,
-            tabId,
-            command,
-            async (streamData, ct) =>
-            {
-                await Clients.Caller.SendAsync("ReceiveOutput", tabId, streamData, ct);
-            },
-            Context.ConnectionAborted);
+        // 명령 시작 이벤트 발송
+        await Clients.Caller.SendAsync("CommandStarted", tabId, Context.ConnectionAborted);
 
-        if (!result.IsSuccess)
+        Result<bool>? result = null;
+        try
         {
-            return HubResponse.Fail(result.Failure!);
-        }
+            result = await _sessionService.ExecuteCommandAsync(
+                userId,
+                tabId,
+                command,
+                async (streamData, ct) =>
+                {
+                    // 스트림 데이터 구분 라우팅
+                    switch (streamData.Type)
+                    {
+                        case PowerShellStreamType.Output:
+                            await Clients.Caller.SendAsync("ReceiveOutput", tabId, streamData.Content, ct);
+                            break;
+                        case PowerShellStreamType.Error:
+                            await Clients.Caller.SendAsync("ReceiveError", tabId, streamData.Content, ct);
+                            break;
+                        case PowerShellStreamType.Warning:
+                            await Clients.Caller.SendAsync("ReceiveWarning", tabId, streamData.Content, ct);
+                            break;
+                        case PowerShellStreamType.Verbose:
+                            await Clients.Caller.SendAsync("ReceiveVerbose", tabId, streamData.Content, ct);
+                            break;
+                        case PowerShellStreamType.Debug:
+                            await Clients.Caller.SendAsync("ReceiveDebug", tabId, streamData.Content, ct);
+                            break;
+                        case PowerShellStreamType.Information:
+                            await Clients.Caller.SendAsync("ReceiveInformation", tabId, streamData.Content, ct);
+                            break;
+                    }
+                },
+                Context.ConnectionAborted);
 
-        return HubResponse.Ok();
+            if (!result.IsSuccess)
+            {
+                return HubResponse.Fail(result.Failure!);
+            }
+
+            return HubResponse.Ok();
+        }
+        finally
+        {
+            bool isSuccess = result is { IsSuccess: true, Value: true };
+            await Clients.Caller.SendAsync("CommandCompleted", tabId, isSuccess, Context.ConnectionAborted);
+        }
     }
 
     public async Task<HubResponse> StopCommand(Guid tabId)
