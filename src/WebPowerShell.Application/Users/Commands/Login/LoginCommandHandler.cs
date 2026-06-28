@@ -12,11 +12,13 @@ namespace WebPowerShell.Application.Users.Commands.Login
     {
         private readonly IUserRepository _userRepository;
         private readonly IPasswordHasher _passwordHasher;
+        private readonly TimeProvider _timeProvider;
 
-        public LoginCommandHandler(IUserRepository userRepository, IPasswordHasher passwordHasher)
+        public LoginCommandHandler(IUserRepository userRepository, IPasswordHasher passwordHasher, TimeProvider? timeProvider = null)
         {
             _userRepository = userRepository;
             _passwordHasher = passwordHasher;
+            _timeProvider = timeProvider ?? TimeProvider.System;
         }
 
         public async Task<Result<LoginResponseDto>> HandleAsync(LoginCommand command, CancellationToken cancellationToken = default)
@@ -38,12 +40,27 @@ namespace WebPowerShell.Application.Users.Commands.Login
                 return Result<LoginResponseDto>.Fail(AppFailure.Unauthorized);
             }
 
-            if (!_passwordHasher.VerifyPassword(command.Password, user.PasswordHash))
+            if (user.LockedUntil.HasValue && user.LockedUntil.Value > _timeProvider.GetUtcNow())
             {
                 return Result<LoginResponseDto>.Fail(AppFailure.Unauthorized);
             }
 
-            bool isPasswordExpired = DateTimeOffset.UtcNow - user.LastPasswordChangeDate >= TimeSpan.FromDays(7);
+            if (!_passwordHasher.VerifyPassword(command.Password, user.PasswordHash))
+            {
+                user.FailedLoginCount++;
+                if (user.FailedLoginCount >= 5)
+                {
+                    user.LockedUntil = _timeProvider.GetUtcNow().AddMinutes(1);
+                }
+                await _userRepository.SaveAsync(user, cancellationToken);
+                return Result<LoginResponseDto>.Fail(AppFailure.Unauthorized);
+            }
+
+            user.FailedLoginCount = 0;
+            user.LockedUntil = null;
+            await _userRepository.SaveAsync(user, cancellationToken);
+
+            bool isPasswordExpired = _timeProvider.GetUtcNow() - user.LastPasswordChangeDate >= TimeSpan.FromDays(7);
 
             var response = new LoginResponseDto
             {

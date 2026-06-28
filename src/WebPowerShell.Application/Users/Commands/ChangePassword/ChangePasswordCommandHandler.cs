@@ -12,11 +12,13 @@ namespace WebPowerShell.Application.Users.Commands.ChangePassword
     {
         private readonly IUserRepository _userRepository;
         private readonly IPasswordHasher _passwordHasher;
+        private readonly TimeProvider _timeProvider;
 
-        public ChangePasswordCommandHandler(IUserRepository userRepository, IPasswordHasher passwordHasher)
+        public ChangePasswordCommandHandler(IUserRepository userRepository, IPasswordHasher passwordHasher, TimeProvider? timeProvider = null)
         {
             _userRepository = userRepository;
             _passwordHasher = passwordHasher;
+            _timeProvider = timeProvider ?? TimeProvider.System;
         }
 
         public async Task<Result<bool>> HandleAsync(ChangePasswordCommand command, CancellationToken cancellationToken = default)
@@ -63,7 +65,7 @@ namespace WebPowerShell.Application.Users.Commands.ChangePassword
             bool hasDigit = false;
             bool hasSpecial = false;
 
-            const string SpecialCharacters = "!@#$%^&*()_+-=[]{}|;':\",./<>?`~\\\\";
+            const string SpecialCharacters = "!@#$%^&*()_+-=[]{}|;':\",./<>?`~\\";
             foreach (char c in command.NewPassword)
             {
                 if (c >= 'A' && c <= 'Z') hasUpper = true;
@@ -84,7 +86,7 @@ namespace WebPowerShell.Application.Users.Commands.ChangePassword
             }
 
             user.PasswordHash = _passwordHasher.HashPassword(command.NewPassword);
-            user.LastPasswordChangeDate = DateTimeOffset.UtcNow;
+            user.LastPasswordChangeDate = _timeProvider.GetUtcNow();
             user.FailedLoginCount = 0;
             user.LockedUntil = null;
 

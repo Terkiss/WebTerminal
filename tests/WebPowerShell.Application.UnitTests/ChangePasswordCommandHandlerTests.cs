@@ -14,13 +14,15 @@ namespace WebPowerShell.Application.UnitTests
     {
         private readonly IUserRepository _userRepository;
         private readonly IPasswordHasher _passwordHasher;
+        private readonly FakeTimeProvider _timeProvider;
         private readonly ChangePasswordCommandHandler _handler;
 
         public ChangePasswordCommandHandlerTests()
         {
             _userRepository = Substitute.For<IUserRepository>();
             _passwordHasher = Substitute.For<IPasswordHasher>();
-            _handler = new ChangePasswordCommandHandler(_userRepository, _passwordHasher);
+            _timeProvider = new FakeTimeProvider(new DateTimeOffset(2026, 6, 29, 3, 0, 0, TimeSpan.Zero));
+            _handler = new ChangePasswordCommandHandler(_userRepository, _passwordHasher, _timeProvider);
         }
 
         [Fact]
@@ -39,9 +41,9 @@ namespace WebPowerShell.Application.UnitTests
                 Username = "testuser",
                 PasswordHash = currentPasswordHash,
                 IsActive = true,
-                LastPasswordChangeDate = DateTimeOffset.UtcNow.AddDays(-10),
+                LastPasswordChangeDate = _timeProvider.GetUtcNow().AddDays(-10),
                 FailedLoginCount = 3,
-                LockedUntil = DateTimeOffset.UtcNow.AddMinutes(15)
+                LockedUntil = _timeProvider.GetUtcNow().AddMinutes(15)
             };
 
             var command = new ChangePasswordCommand
@@ -73,7 +75,7 @@ namespace WebPowerShell.Application.UnitTests
             Assert.True(result.IsSuccess);
             Assert.True(result.Value);
             Assert.Equal(newPasswordHash, user.PasswordHash);
-            Assert.True(DateTimeOffset.UtcNow - user.LastPasswordChangeDate < TimeSpan.FromSeconds(5));
+            Assert.Equal(_timeProvider.GetUtcNow(), user.LastPasswordChangeDate);
             Assert.Equal(0, user.FailedLoginCount);
             Assert.Null(user.LockedUntil);
 

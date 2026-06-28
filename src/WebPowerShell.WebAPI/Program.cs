@@ -1,8 +1,85 @@
+using System.Security.Claims;
+using System.Text.Json;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.EntityFrameworkCore;
+using WebPowerShell.Application.Common.Interfaces;
+using WebPowerShell.Application.Users.Commands.ChangePassword;
+using WebPowerShell.Application.Users.Commands.Login;
+using WebPowerShell.Domain.Common;
+using WebPowerShell.Infrastructure.Persistence;
+using WebPowerShell.Infrastructure.Persistence.Repositories;
+using WebPowerShell.Infrastructure.Security;
+using WebPowerShell.WebAPI.Middleware;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
+// DB Context & Repository
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseInMemoryDatabase("WebPowerShellDb"));
+
+builder.Services.AddScoped<IUserRepository, UserRepository>();
+builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
+builder.Services.AddSingleton(TimeProvider.System);
+
+// Handlers
+builder.Services.AddScoped<LoginCommandHandler>();
+builder.Services.AddScoped<ChangePasswordCommandHandler>();
+
+// OpenAPI
 builder.Services.AddOpenApi();
+
+// Cookie Authentication
+builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.Cookie.Name = ".AspNetCore.Cookies";
+        options.Events.OnRedirectToLogin = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        };
+        options.Events.OnRedirectToAccessDenied = context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+// Rate Limiting (IP별 1분 내 최대 5회)
+builder.Services.AddRateLimiter(options =>
+{
+    options.AddPolicy("LoginLimiter", httpContext =>
+    {
+        string ipAddress = "unknown";
+        if (httpContext.Request.Headers.TryGetValue("X-Forwarded-For", out var forwardedFor))
+        {
+            ipAddress = forwardedFor.ToString();
+        }
+        else
+        {
+            ipAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        }
+
+        return RateLimitPartition.GetFixedWindowLimiter(ipAddress, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        });
+    });
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.OnRejected = async (context, token) =>
+    {
+        context.HttpContext.Response.ContentType = "application/json";
+        var responseBody = JsonSerializer.Serialize(AppFailure.RateLimitExceeded);
+        await context.HttpContext.Response.WriteAsync(responseBody, token);
+    };
+});
 
 var app = builder.Build();
 
@@ -14,14 +91,79 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+app.UseRouting();
+app.UseRateLimiter();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+// Password Expiry Middleware
+app.UseMiddleware<PasswordExpiryMiddleware>();
+
+// Endpoints
+app.MapPost("/api/auth/login", async (LoginCommand command, LoginCommandHandler handler, HttpContext httpContext) =>
+{
+    var result = await handler.HandleAsync(command);
+    if (result.IsFailure)
+    {
+        return Results.Json(result.Failure, statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    var response = result.Value!;
+    var claims = new List<Claim>
+    {
+        new Claim(ClaimTypes.NameIdentifier, response.UserId.ToString()),
+        new Claim(ClaimTypes.Name, response.Username)
+    };
+
+    var claimsIdentity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
+    var authProperties = new AuthenticationProperties
+    {
+        IsPersistent = true,
+        ExpiresUtc = DateTimeOffset.UtcNow.AddDays(1)
+    };
+
+    await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(claimsIdentity), authProperties);
+
+    return Results.Ok(response);
+})
+.RequireRateLimiting("LoginLimiter");
+
+app.MapPost("/api/auth/change-password", async (ChangePasswordCommand command, ChangePasswordCommandHandler handler, HttpContext httpContext) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null || !Guid.TryParse(userIdClaim.Value, out var userId))
+    {
+        return Results.Json(AppFailure.Unauthorized, statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    command.UserId = userId;
+
+    var result = await handler.HandleAsync(command);
+    if (result.IsFailure)
+    {
+        return Results.Json(result.Failure, statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    return Results.Ok(new { Success = true });
+})
+.RequireAuthorization();
+
+app.MapPost("/api/auth/logout", async (HttpContext httpContext) =>
+{
+    await httpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+    return Results.Ok(new { Success = true });
+})
+.RequireAuthorization();
+
 var summaries = new[]
 {
     "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"
 };
 
-app.MapGet("/weatherforecast", () =>
+app.MapGet("/api/weatherforecast", () =>
 {
-    var forecast =  Enumerable.Range(1, 5).Select(index =>
+    var forecast = Enumerable.Range(1, 5).Select(index =>
         new WeatherForecast
         (
             DateOnly.FromDateTime(DateTime.Now.AddDays(index)),
@@ -31,7 +173,8 @@ app.MapGet("/weatherforecast", () =>
         .ToArray();
     return forecast;
 })
-.WithName("GetWeatherForecast");
+.WithName("GetWeatherForecast")
+.RequireAuthorization();
 
 app.Run();
 
@@ -39,3 +182,6 @@ record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
 {
     public int TemperatureF => 32 + (int)(TemperatureC / 0.5556);
 }
+
+// For integration tests
+public partial class Program { }

@@ -15,13 +15,15 @@ namespace WebPowerShell.Application.UnitTests
     {
         private readonly IUserRepository _userRepository;
         private readonly IPasswordHasher _passwordHasher;
+        private readonly FakeTimeProvider _timeProvider;
         private readonly LoginCommandHandler _handler;
 
         public LoginCommandHandlerTests()
         {
             _userRepository = Substitute.For<IUserRepository>();
             _passwordHasher = Substitute.For<IPasswordHasher>();
-            _handler = new LoginCommandHandler(_userRepository, _passwordHasher);
+            _timeProvider = new FakeTimeProvider(new DateTimeOffset(2026, 6, 29, 3, 0, 0, TimeSpan.Zero));
+            _handler = new LoginCommandHandler(_userRepository, _passwordHasher, _timeProvider);
         }
 
         [Fact]
@@ -38,7 +40,7 @@ namespace WebPowerShell.Application.UnitTests
                 Username = username,
                 PasswordHash = hashedPassword,
                 IsActive = true,
-                LastPasswordChangeDate = DateTimeOffset.UtcNow.AddDays(-6) // Less than 7 days
+                LastPasswordChangeDate = _timeProvider.GetUtcNow().AddDays(-6) // Less than 7 days
             };
 
             var command = new LoginCommand { Username = username, Password = password };
@@ -49,6 +51,9 @@ namespace WebPowerShell.Application.UnitTests
             _passwordHasher.VerifyPassword(password, hashedPassword)
                 .Returns(true);
 
+            _userRepository.SaveAsync(user, Arg.Any<CancellationToken>())
+                .Returns(Result<bool>.Success(true));
+
             // Act
             var result = await _handler.HandleAsync(command, CancellationToken.None);
 
@@ -58,6 +63,8 @@ namespace WebPowerShell.Application.UnitTests
             Assert.Equal(user.Id, result.Value.UserId);
             Assert.Equal(user.Username, result.Value.Username);
             Assert.False(result.Value.IsPasswordExpired);
+            Assert.Equal(0, user.FailedLoginCount);
+            Assert.Null(user.LockedUntil);
         }
 
         [Fact]
@@ -74,7 +81,7 @@ namespace WebPowerShell.Application.UnitTests
                 Username = username,
                 PasswordHash = hashedPassword,
                 IsActive = true,
-                LastPasswordChangeDate = DateTimeOffset.UtcNow.AddDays(-8) // More than 7 days
+                LastPasswordChangeDate = _timeProvider.GetUtcNow().AddDays(-8) // More than 7 days
             };
 
             var command = new LoginCommand { Username = username, Password = password };
@@ -84,6 +91,9 @@ namespace WebPowerShell.Application.UnitTests
 
             _passwordHasher.VerifyPassword(password, hashedPassword)
                 .Returns(true);
+
+            _userRepository.SaveAsync(user, Arg.Any<CancellationToken>())
+                .Returns(Result<bool>.Success(true));
 
             // Act
             var result = await _handler.HandleAsync(command, CancellationToken.None);
@@ -129,7 +139,7 @@ namespace WebPowerShell.Application.UnitTests
                 Username = username,
                 PasswordHash = hashedPassword,
                 IsActive = false, // Inactive
-                LastPasswordChangeDate = DateTimeOffset.UtcNow
+                LastPasswordChangeDate = _timeProvider.GetUtcNow()
             };
 
             var command = new LoginCommand { Username = username, Password = password };
@@ -146,7 +156,7 @@ namespace WebPowerShell.Application.UnitTests
         }
 
         [Fact]
-        public async Task HandleAsync_IncorrectPassword_ReturnsUnauthorized()
+        public async Task HandleAsync_IncorrectPassword_IncrementsFailedCountAndSaves()
         {
             // Arrange
             var username = "testuser";
@@ -159,7 +169,8 @@ namespace WebPowerShell.Application.UnitTests
                 Username = username,
                 PasswordHash = hashedPassword,
                 IsActive = true,
-                LastPasswordChangeDate = DateTimeOffset.UtcNow
+                FailedLoginCount = 2,
+                LastPasswordChangeDate = _timeProvider.GetUtcNow()
             };
 
             var command = new LoginCommand { Username = username, Password = password };
@@ -168,7 +179,10 @@ namespace WebPowerShell.Application.UnitTests
                 .Returns(Result<User>.Success(user));
 
             _passwordHasher.VerifyPassword(password, hashedPassword)
-                .Returns(false); // Verification fails
+                .Returns(false);
+
+            _userRepository.SaveAsync(user, Arg.Any<CancellationToken>())
+                .Returns(Result<bool>.Success(true));
 
             // Act
             var result = await _handler.HandleAsync(command, CancellationToken.None);
@@ -176,6 +190,88 @@ namespace WebPowerShell.Application.UnitTests
             // Assert
             Assert.True(result.IsFailure);
             Assert.Equal(AppFailure.Unauthorized, result.Failure);
+            Assert.Equal(3, user.FailedLoginCount);
+            Assert.Null(user.LockedUntil);
+            await _userRepository.Received(1).SaveAsync(user, Arg.Any<CancellationToken>());
+        }
+
+        [Fact]
+        public async Task HandleAsync_IncorrectPasswordFiveTimes_LocksAccount()
+        {
+            // Arrange
+            var username = "testuser";
+            var password = "wrongpassword";
+            var hashedPassword = "hashedpassword";
+
+            var user = new User
+            {
+                Id = Guid.NewGuid(),
+                Username = username,
+                PasswordHash = hashedPassword,
+                IsActive = true,
+                FailedLoginCount = 4,
+                LastPasswordChangeDate = _timeProvider.GetUtcNow()
+            };
+
+            var command = new LoginCommand { Username = username, Password = password };
+
+            _userRepository.GetByUsernameAsync(username, Arg.Any<CancellationToken>())
+                .Returns(Result<User>.Success(user));
+
+            _passwordHasher.VerifyPassword(password, hashedPassword)
+                .Returns(false);
+
+            _userRepository.SaveAsync(user, Arg.Any<CancellationToken>())
+                .Returns(Result<bool>.Success(true));
+
+            var expectedLockUntil = _timeProvider.GetUtcNow().AddMinutes(1);
+
+            // Act
+            var result = await _handler.HandleAsync(command, CancellationToken.None);
+
+            // Assert
+            Assert.True(result.IsFailure);
+            Assert.Equal(AppFailure.Unauthorized, result.Failure);
+            Assert.Equal(5, user.FailedLoginCount);
+            Assert.NotNull(user.LockedUntil);
+            Assert.Equal(expectedLockUntil, user.LockedUntil.Value);
+            await _userRepository.Received(1).SaveAsync(user, Arg.Any<CancellationToken>());
+        }
+
+        [Fact]
+        public async Task HandleAsync_AccountIsLocked_ReturnsUnauthorizedImmediately()
+        {
+            // Arrange
+            var username = "testuser";
+            var password = "correctpassword";
+            var hashedPassword = "hashedpassword";
+
+            var user = new User
+            {
+                Id = Guid.NewGuid(),
+                Username = username,
+                PasswordHash = hashedPassword,
+                IsActive = true,
+                FailedLoginCount = 5,
+                LockedUntil = _timeProvider.GetUtcNow().AddSeconds(30),
+                LastPasswordChangeDate = _timeProvider.GetUtcNow().AddDays(-1)
+            };
+
+            var command = new LoginCommand { Username = username, Password = password };
+
+            _userRepository.GetByUsernameAsync(username, Arg.Any<CancellationToken>())
+                .Returns(Result<User>.Success(user));
+
+            // Act
+            var result = await _handler.HandleAsync(command, CancellationToken.None);
+
+            // Assert
+            Assert.True(result.IsFailure);
+            Assert.Equal(AppFailure.Unauthorized, result.Failure);
+
+            // Should not check password nor reset lock status
+            _passwordHasher.DidNotReceiveWithAnyArgs().VerifyPassword(default!, default!);
+            await _userRepository.DidNotReceiveWithAnyArgs().SaveAsync(default!, default);
         }
     }
 }
