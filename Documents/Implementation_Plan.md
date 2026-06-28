@@ -1,72 +1,45 @@
-# Implementation Plan - Phase 2 & 3. Authentication & PowerShell Session
+# Implementation Plan - Phase 2, 3 & 4. Authentication, Session & WebAPI/SignalR Integration
 
 ## 1. 개요
-본 계획서는 WebPowerShell MVP의 Phase 2(인증 및 보안) 및 Phase 3(PowerShell 세션 및 탭 관리) 기능 구현을 위한 설계 문서이다.
+본 계획서는 WebPowerShell MVP의 Phase 2(인증 및 보안), Phase 3(PowerShell 세션 및 탭 관리), Phase 4(SignalR Hub 및 프론트엔드 연동) 기능 구현을 위한 설계 문서이다.
 
 ---
 
-## 2. Phase 2. 인증 및 보안 (완료)
-
-### Milestone 1: Password Hashing Infrastructure (done)
-- **목적**: 비밀번호의 암호학적 해싱 및 검증 모듈 구축.
-- **범위**:
-  - `WebPowerShell.Application`에 `IPasswordHasher` 인터페이스 선언.
-  - `WebPowerShell.Infrastructure`에 `BCryptPasswordHasher` (BCrypt.Net-Next 사용) 구현.
-
-### Milestone 2: Login UseCase & DTOs (done)
-- **목적**: 로그인 비즈니스 로직 구현.
-- **범위**:
-  - `LoginCommand` 및 `LoginCommandHandler` 구현 (Application).
-  - 계정 활성 상태 검사 및 에러 처리 (비활성 또는 비밀번호 불일치 시 `AppFailure.Unauthorized` 반환).
-  - 로그인 성공 시 DTO 및 비밀번호 만료 여부 판정 로직.
-
-### Milestone 3: Change Password UseCase (done)
-- **목적**: 비밀번호 변경 비즈니스 로직 구현.
-- **범위**:
-  - `ChangePasswordCommand` 및 `ChangePasswordCommandHandler` 구현 (Application).
-  - 기존 비밀번호 일치 검증, 비밀번호 정책 검증.
-  - 성공 시 `LastPasswordChangeDate`를 UTC 기준 현재 시각으로 업데이트.
-
-### Milestone 4: Rate Limiting & Expiry Policy (done)
-- **목적**: 보안 정책 및 WebAPI 통합.
-- **범위**:
-  - WebAPI 프로젝트에 HttpOnly 쿠키 발급 및 인증 핸들러/미들웨어 구성.
-  - 로그인 실패 횟수 잠금 정책 (`FailedLoginCount`, `LockedUntil`) 및 로그인 API 구현.
-  - 168시간(7일) 비밀번호 만료 검사 필터/미들웨어 연동.
+## 2. Phase 2 & 3. (완료)
+... (Phase 2 & 3 마일스톤 1 ~ 8 완료 상태) ...
 
 ---
 
-## 3. Phase 3. PowerShell 세션 및 탭 관리 (진행 예정)
+## 3. Phase 4. SignalR Hub 및 프론트엔드 연동 (진행 예정)
 
-### Milestone 5: PowerShell Session Core Model & Interfaces
-- **목적**: PowerShell 세션을 추상화하고 애플리케이션 서비스 경계를 설계한다.
+### Milestone 9: TerminalHub & Hub Authentication Setup
+- **목적**: 실시간 통신을 위한 SignalR Hub 구축 및 인증 설정.
 - **범위**:
-  - `WebPowerShell.Domain`에 `PowerShellSession` 클래스(세션 ID, Tab ID, 사용자 ID, 마지막 활성 시각 등 메타데이터 정의) 설계.
-  - `WebPowerShell.Application`에 `IPowerShellSessionService` 인터페이스 정의.
-    - 주요 메서드: `CreateSessionAsync`, `ExecuteCommandAsync`, `StopCommandAsync`, `CloseSessionAsync`, `GetSessionAsync`.
-  - 명령 스트리밍 데이터 구조 정의.
+  - `WebPowerShell.WebAPI` 프로젝트에 `TerminalHub` 생성 및 `/hubs/terminal` 라우팅 매핑.
+  - SignalR 연결(Negotiate 및 WebSocket 연결) 시 HttpOnly 쿠키 인증 토큰을 통해 사용자를 식별하고 미인증 접속을 차단.
+- **검증**: 모의 SignalR 클라이언트를 이용한 인증/미인증 접속 격리 단위/통합 테스트.
 
-### Milestone 6: PowerShell Runspace Infrastructure
-- **목적**: `System.Management.Automation` SDK를 활용한 실제 Runspace 및 PowerShell 구동 인프라 구축.
+### Milestone 10: SignalR Hub Commands & Session Ownership
+- **목적**: 클라이언트 요청 처리 및 세션 소유권 검증.
 - **범위**:
-  - `WebPowerShell.Infrastructure` 프로젝트에 `System.Management.Automation` 패키지 추가.
-  - `PowerShellSessionService` 실제 구현 클래스 정의.
-  - 각 세션마다 독립된 `Runspace`를 동적으로 생성 및 캐싱 관리하는 In-Memory Session Storage 구축.
-  - 세션별 동시 호출 예외 방지를 위해 `SemaphoreSlim`을 적용한 스레드 세이프 동시성 제어 적용.
+  - `TerminalHub` 내에 `OpenTab`, `SendCommand`, `StopCommand`, `CloseTab` 메서드 정의.
+  - 각 요청 시 `Context.ConnectionId`와 사용자 ID를 기반으로 해당 탭 세션에 대한 소유권을 확인하여 다른 사용자의 세션 조작 차단 (소유권 실패 시 `TerminalError` 반환).
+  - `IPowerShellSessionService`와 Hub 메서드 유기적 결합.
 
-### Milestone 7: Real-Time Stream Execution & Stop Command
-- **목적**: 명령어 실시간 출력 수집 및 중지 기능 구현.
+### Milestone 11: Real-Time Stream Event Routing
+- **목적**: PowerShell Output Stream을 SignalR 이벤트를 통해 해당 클라이언트로 전달.
 - **범위**:
-  - PowerShell Output Stream (표준 출력, 에러 출력)을 비동기식 콜백(`Func<string, CancellationToken, Task>`)을 통해 실시간 스트리밍 처리.
-  - `StopCommandAsync` 호출 시 진행 중인 CancellationToken 취소 신호 및 `PowerShell.Stop()` 연동을 통한 정상 중지 및 복구 정책 반영.
-- **검증**: `dotnet test`로 로컬 세션 생성, 명령 실행(예: `Get-Location`, `dir`), 스트리밍 수집, 중지 시나리오 단위 테스트 작성.
+  - `IPowerShellSessionService`에서 반환되는 출력 채널 데이터를 읽어 Hub 컨텍스트의 `Clients.Caller`에게 `ReceiveOutput` 및 `ReceiveError` 이벤트로 실시간 송신.
+  - 명령 시작 및 완료 이벤트를 `CommandStarted`, `CommandCompleted`로 실시간 스트리밍 피드백 처리.
 
-### Milestone 8: Session Cleanup Worker & Lifetime Management
-- **목적**: 유휴 세션 정리 및 리소스 누수 차단.
+### Milestone 12: Static Frontend with xterm.js & Multi-Tab UI
+- **목적**: xterm.js 기반의 다중 탭 웹 터미널 UI 구현.
 - **범위**:
-  - `.NET BackgroundService` 기반 `SessionCleanupWorker` 클래스 구현 (5분 주기로 스캔, 30분 이상 유휴 세션 탐지하여 Runspace/PowerShell 리소스 Dispose 처리).
-  - 애플리케이션 정상 종료 시 (호스트 종료 토큰 수신) 모든 활성 Runspace 세션 Graceful Shutdown 및 정리 처리.
-- **검증**: 단위 테스트를 통한 백그라운드 워커 유휴 판정 및 Dispose 호출 검증.
+  - `wwwroot` 디렉터리에 로그인 화면, 비밀번호 변경 화면, 메인 터미널 화면 정적 리소스(HTML, Vanilla CSS, JS) 구현.
+  - xterm.js(CDN 호출) 터미널 객체 동적 초기화.
+  - 다중 탭 생성, 탭 전환 시 기존 xterm.js 인스턴스 버퍼 유지, 탭 닫기 UI 연동.
+  - SignalR JavaScript Client를 연동하여 터미널 입출력 스트림 바인딩.
+- **검증**: 로컬 호스트 가동을 통한 실제 브라우저 다중 탭 동시 구동 및 입력 명령어 에코 스트리밍 작동 검증.
 
 ## 4. 의존성 패키지
 - `BCrypt.Net-Next` (Phase 2)

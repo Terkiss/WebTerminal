@@ -13,6 +13,7 @@ using WebPowerShell.Infrastructure.Persistence;
 using WebPowerShell.Infrastructure.Persistence.Repositories;
 using WebPowerShell.Infrastructure.Security;
 using WebPowerShell.Infrastructure.PowerShell;
+using WebPowerShell.WebAPI.Hubs;
 using WebPowerShell.WebAPI.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -33,6 +34,9 @@ builder.Services.AddScoped<ChangePasswordCommandHandler>();
 
 // OpenAPI
 builder.Services.AddOpenApi();
+
+// SignalR
+builder.Services.AddSignalR();
 
 // Cookie Authentication
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
@@ -99,6 +103,8 @@ app.UseRateLimiter();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+app.MapHub<TerminalHub>("/hubs/terminal");
 
 // Password Expiry Middleware
 app.UseMiddleware<PasswordExpiryMiddleware>();

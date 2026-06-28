@@ -1,4 +1,4 @@
-# Implementation Progress - Phase 2 & 3. Authentication & PowerShell Session
+# Implementation Progress - Phase 2, 3 & 4. Authentication, Session & WebAPI/SignalR Integration
 
 ## Milestone Status
 
@@ -12,9 +12,13 @@
 | M6 | PowerShell Runspace Infrastructure | done | 2026-06-29 | Terukirdo |
 | M7 | Real-Time Stream Execution & Stop Command | done | 2026-06-29 | Terukirdo |
 | M8 | Session Cleanup Worker & Lifetime | done | 2026-06-29 | Terukirdo |
+| M9 | TerminalHub & Hub Authentication Setup | Active | 2026-06-29 | Terukirdo |
+| M10 | SignalR Hub Commands & Session Ownership | Not started | 2026-06-29 | - |
+| M11 | Real-Time Stream Event Routing | Not started | 2026-06-29 | - |
+| M12 | Static Frontend with xterm.js & Multi-Tab UI | Not started | 2026-06-29 | - |
 
 ## Current Active Milestone
-- **Milestone**: None (Phase 3 Completed)
-- **Status**: Completed
+- **Milestone**: M9 (TerminalHub & Hub Authentication Setup)
+- **Status**: In Progress
 - **Started At**: 2026-06-29
-- **Last Verified**: 2026-06-29 (M8 Approved)
+- **Last Verified**: -

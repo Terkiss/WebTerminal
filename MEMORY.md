@@ -1,10 +1,10 @@
 # MEMORY
 
 ## Current State Snapshot
-- **Focus**: Phase 3 (PowerShell Session & Tab Management) 전체 구현 완료 및 원격 저장소(GitHub) 최종 푸시 완료.
-- **In Progress**: 없음.
+- **Focus**: Phase 4 (SignalR & Frontend Integration) 전체 구현 및 자율 루프 구동 개시.
+- **In Progress**: Milestone 9 (TerminalHub & Hub Authentication Setup)
 - **Next Steps**:
-  1. 주인님께 원격 푸시 완료 보고.
-  2. Phase 4 (PowerShell Endpoint & Tab API Integration) 착수 계획 승인 대기.
+  1. 주인님께 Phase 4 착수 및 Ralph Orchestrator 기동 사실 보고.
+  2. M9 ~ M12 전체 자율 완결 루프 전격 기동.
 - **Known Risks**:
-  - 없음 (모든 변경사항이 안전하게 원격 저장소에 업로드되었습니다).
+  - xterm.js와 SignalR 간의 버퍼 지연 현상 및 브라우저 TTY 렌더링 부하 제어 필요.
