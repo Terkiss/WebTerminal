@@ -261,6 +261,7 @@ class Tab {
         this.terminal = null;
         this.domElement = null;
         this.tabItemEl = null;
+        this.isOpened = false; // flag to track if xterm open has been called
     }
     
     replaceCommandLine(newContent) {
@@ -322,7 +323,7 @@ class Tab {
         containerWrapper.appendChild(container);
         this.domElement = container;
         
-        // 3. Initialize Xterm
+        // 3. Initialize Xterm (but do NOT open yet)
         this.terminal = new Terminal({
             cursorBlink: true,
             cursorStyle: 'bar',
@@ -343,9 +344,6 @@ class Tab {
                 white: '#f8fafc'
             }
         });
-        
-        this.terminal.open(container);
-        this.terminal.write(`WebPowerShell Premium Console\r\n\r\nPS ${this.currentDirectory}> `);
         
         // Handle User Input Local Echo & Buffering
         this.terminal.onData(async (data) => {
@@ -457,8 +455,6 @@ class Tab {
                     break;
             }
         });
-        
-        this.fit();
     }
     
     fit() {
@@ -479,8 +475,17 @@ class Tab {
         if (active) {
             this.tabItemEl.classList.add('active');
             this.domElement.classList.add('active');
+            
+            // Open and initialize xterm ONLY when it is active (visible in DOM)
+            if (!this.isOpened) {
+                this.terminal.open(this.domElement);
+                this.terminal.write(`WebPowerShell Premium Console\r\n\r\nPS ${this.currentDirectory}> `);
+                this.isOpened = true;
+            }
+            
             this.terminal.focus();
             this.fit();
+            
             // Delay fitting to ensure DOM reflow has completed and container size is accurate
             setTimeout(() => {
                 this.fit();
