@@ -420,8 +420,8 @@ class Tab {
                             this.commandBuffer = this.commandBuffer.slice(0, pos - 1) + this.commandBuffer.slice(pos);
                             this.terminal.write('\b');
                             const remaining = this.commandBuffer.slice(pos - 1);
-                            this.terminal.write(remaining + ' \b');
-                            for (let i = 0; i < remaining.length; i++) {
+                            this.terminal.write(remaining + ' ');
+                            for (let i = 0; i <= remaining.length; i++) {
                                 this.terminal.write('\x1b[D');
                             }
                         }
@@ -535,7 +535,7 @@ async function createNewTab() {
         
         switchTab(id);
     } catch (e) {
-        showToast('Failed to instantiate terminal session.', 'error');
+        showToast(`Failed to instantiate terminal session: ${e.message || e}`, 'error', 7000);
         console.error(e);
     }
 }
@@ -780,7 +780,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        oldPassword: oldPasswordInput.value,
+                        currentPassword: oldPasswordInput.value,
                         newPassword: newPasswordInput.value
                     })
                 });
