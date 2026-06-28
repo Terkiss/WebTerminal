@@ -14,11 +14,13 @@ using WebPowerShell.Domain.Entities;
 
 namespace WebPowerShell.Infrastructure.PowerShell
 {
-    public class PowerShellSessionService : IPowerShellSessionService
+    public class PowerShellSessionService : IPowerShellSessionService, IAsyncDisposable, IDisposable
     {
         private readonly ConcurrentDictionary<(Guid UserId, Guid TabId), SessionEntry> _sessions = new();
         private readonly TimeProvider _timeProvider;
         private readonly ILogger<PowerShellSessionService> _logger;
+        private bool _disposed;
+        private readonly object _disposedLock = new();
 
         public PowerShellSessionService(TimeProvider timeProvider, ILogger<PowerShellSessionService> logger)
         {
@@ -28,6 +30,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         public async Task<Result<PowerShellSession>> CreateSessionAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default)
         {
+            ThrowIfDisposed();
             var key = (userId, tabId);
             
             // 기존 세션이 있다면 캐시에서 안전하게 제거하고 리소스 해제
@@ -101,6 +104,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         public async Task<Result<bool>> ExecuteCommandAsync(Guid userId, Guid tabId, string command, Func<PowerShellStreamData, CancellationToken, Task> onStream, CancellationToken cancellationToken = default)
         {
+            ThrowIfDisposed();
             var key = (userId, tabId);
             if (!_sessions.TryGetValue(key, out var entry))
             {
@@ -170,6 +174,10 @@ namespace WebPowerShell.Infrastructure.PowerShell
                 {
                     await consumerTask;
                 }
+                catch (OperationCanceledException ex)
+                {
+                    _logger.LogInformation(ex, "consumerTask 대기 중 취소가 발생했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "consumerTask 대기 중 오류 발생. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
@@ -198,6 +206,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         public async Task<Result<bool>> StopCommandAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default)
         {
+            ThrowIfDisposed();
             var key = (userId, tabId);
             if (!_sessions.TryGetValue(key, out var entry))
             {
@@ -226,6 +235,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         public async Task<Result<bool>> CloseSessionAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default)
         {
+            ThrowIfDisposed();
             var key = (userId, tabId);
             if (!_sessions.TryRemove(key, out var entry))
             {
@@ -239,6 +249,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         public Task<Result<PowerShellSession>> GetSessionAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default)
         {
+            ThrowIfDisposed();
             var key = (userId, tabId);
             if (!_sessions.TryGetValue(key, out var entry))
             {
@@ -246,6 +257,184 @@ namespace WebPowerShell.Infrastructure.PowerShell
             }
 
             return Task.FromResult(Result<PowerShellSession>.Success(entry.SessionMetadata));
+        }
+
+        public async Task<Result<int>> CleanIdleSessionsAsync(TimeSpan idleTimeout, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            var now = _timeProvider.GetUtcNow();
+            var expiredSessions = new System.Collections.Generic.List<(Guid UserId, Guid TabId)>();
+
+            foreach (var kvp in _sessions)
+            {
+                var entry = kvp.Value;
+                if (now - entry.SessionMetadata.LastActiveAt >= idleTimeout)
+                {
+                    expiredSessions.Add(kvp.Key);
+                }
+            }
+
+            int successCount = 0;
+            foreach (var key in expiredSessions)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                var result = await CloseSessionAsync(key.UserId, key.TabId, cancellationToken);
+                if (result.IsSuccess)
+                {
+                    successCount++;
+                }
+            }
+
+            return Result<int>.Success(successCount);
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_disposed)
+            {
+                throw new ObjectDisposedException(nameof(PowerShellSessionService));
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            bool shouldDispose = false;
+            lock (_disposedLock)
+            {
+                if (!_disposed)
+                {
+                    _disposed = true;
+                    shouldDispose = true;
+                }
+            }
+
+            if (shouldDispose)
+            {
+                foreach (var key in _sessions.Keys)
+                {
+                    if (_sessions.TryRemove(key, out var entry))
+                    {
+                        await ReleaseSessionEntryAsync(entry);
+                    }
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            bool shouldDispose = false;
+            lock (_disposedLock)
+            {
+                if (!_disposed)
+                {
+                    _disposed = true;
+                    shouldDispose = true;
+                }
+            }
+
+            if (shouldDispose)
+            {
+                foreach (var key in _sessions.Keys)
+                {
+                    if (_sessions.TryRemove(key, out var entry))
+                    {
+                        ReleaseSessionEntry(entry);
+                    }
+                }
+            }
+        }
+
+        private void ReleaseSessionEntry(SessionEntry entry)
+        {
+            if (entry == null) return;
+
+            // 1. 실행 중인 PowerShell 인스턴스 정지
+            var ps = entry.PowerShellInstance;
+            if (ps != null)
+            {
+                try
+                {
+                    ps.Stop();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "PowerShell 인스턴스를 정지하는 중 오류가 발생했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                }
+            }
+
+            // 2. entry.Lock.Wait()를 통해 현재 진행 중인 명령어 실행이 끝나서 락을 획득할 때까지 대기
+            bool lockAcquired = false;
+            try
+            {
+                // 타임아웃 5초 대기
+                lockAcquired = entry.Lock.Wait(TimeSpan.FromSeconds(5));
+                if (!lockAcquired)
+                {
+                    _logger.LogWarning("세션 정리 중 락을 획득하는 데 실패했습니다(타임아웃). 락 획득 없이 강제 정리를 진행합니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                }
+            }
+            catch (OperationCanceledException ex)
+            {
+                _logger.LogWarning(ex, "세션 정리 중 락 대기가 취소되었습니다. 락 획득 없이 강제 정리를 진행합니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "세션 정리 중 락 대기 과정에서 오류가 발생했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+            }
+
+            // 3. 안전하게 Runspace와 SemaphoreSlim 등의 리소스를 Dispose 및 Close
+            try
+            {
+                var psToDispose = entry.PowerShellInstance;
+                if (psToDispose != null)
+                {
+                    try
+                    {
+                        psToDispose.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "PowerShell 인스턴스를 Dispose하는 중 오류가 발생했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                    }
+                    entry.PowerShellInstance = null;
+                }
+
+                if (entry.Runspace != null)
+                {
+                    try
+                    {
+                        entry.Runspace.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Runspace를 Close하는 중 오류가 발생했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                    }
+
+                    try
+                    {
+                        entry.Runspace.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Runspace를 Dispose하는 중 오류가 발생했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                    }
+                }
+            }
+            finally
+            {
+                try
+                {
+                    entry.Lock.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "SemaphoreSlim Lock을 Dispose하는 중 오류가 발생했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                }
+            }
         }
 
         private async Task ReleaseSessionEntryAsync(SessionEntry entry, CancellationToken cancellationToken = default)

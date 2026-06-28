@@ -25,6 +25,7 @@ builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IPowerShellSessionService, PowerShellSessionService>();
+builder.Services.AddHostedService<SessionCleanupWorker>();
 
 // Handlers
 builder.Services.AddScoped<LoginCommandHandler>();

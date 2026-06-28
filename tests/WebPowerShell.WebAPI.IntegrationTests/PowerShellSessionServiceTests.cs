@@ -322,5 +322,90 @@ namespace WebPowerShell.WebAPI.IntegrationTests
             // Clean up
             await _service.CloseSessionAsync(userId, tabId);
         }
+
+        [Fact]
+        public async Task CleanIdleSessionsAsync_ShouldCleanExpiredSessionsOnly()
+        {
+            // Arrange
+            var user1 = Guid.NewGuid();
+            var tab1 = Guid.NewGuid();
+            var user2 = Guid.NewGuid();
+            var tab2 = Guid.NewGuid();
+
+            // 1. 첫 번째 세션 생성 (현재 시간: 3:00)
+            var s1Result = await _service.CreateSessionAsync(user1, tab1);
+            Assert.True(s1Result.IsSuccess);
+
+            // 2. 시간을 15분 후로 이동 (현재 시간: 3:15)
+            _timeProvider.Advance(TimeSpan.FromMinutes(15));
+
+            // 3. 두 번째 세션 생성 (LastActiveAt은 3:15가 됨)
+            var s2Result = await _service.CreateSessionAsync(user2, tab2);
+            Assert.True(s2Result.IsSuccess);
+
+            // 4. 시간을 다시 20분 후로 이동 (현재 시간: 3:35)
+            // 첫 번째 세션은 3:00 활성화였으므로 유휴 시간 35분 경과 (만료)
+            // 두 번째 세션은 3:15 활성화였으므로 유휴 시간 20분 경과 (미만료)
+            _timeProvider.Advance(TimeSpan.FromMinutes(20));
+
+            // Act
+            // 유휴 시간 30분을 기준으로 정리
+            var cleanResult = await _service.CleanIdleSessionsAsync(TimeSpan.FromMinutes(30));
+
+            // Assert
+            Assert.True(cleanResult.IsSuccess);
+            Assert.Equal(1, cleanResult.Value); // 1개 정리됨
+
+            // 첫 번째 세션은 조회 시 세션이 없어야 함 (SessionNotFound)
+            var getS1 = await _service.GetSessionAsync(user1, tab1);
+            Assert.True(getS1.IsFailure);
+            Assert.Equal(AppFailure.SessionNotFound.ErrorCode, getS1.Failure!.ErrorCode);
+
+            // 두 번째 세션은 유지되어야 함
+            var getS2 = await _service.GetSessionAsync(user2, tab2);
+            Assert.True(getS2.IsSuccess);
+
+            // Clean up (남아있는 세션 정리)
+            await _service.CloseSessionAsync(user2, tab2);
+        }
+
+        [Fact]
+        public void Dispose_ShouldBeIdempotent_WhenCalledMultipleTimes()
+        {
+            // Act & Assert
+            // 첫 번째 Dispose
+            _service.Dispose();
+
+            // 두 번째, 세 번째 Dispose 호출 시 예외가 발생하지 않아야 함
+            var ex = Record.Exception(() => _service.Dispose());
+            Assert.Null(ex);
+        }
+
+        [Fact]
+        public async Task DisposeAsync_ShouldBeIdempotent_WhenCalledMultipleTimes()
+        {
+            // Act & Assert
+            // 첫 번째 DisposeAsync
+            await _service.DisposeAsync();
+
+            // 두 번째, 세 번째 DisposeAsync 호출 시 예외가 발생하지 않아야 함
+            var ex = await Record.ExceptionAsync(async () => await _service.DisposeAsync());
+            Assert.Null(ex);
+        }
+
+        [Fact]
+        public async Task APICalls_AfterDispose_ShouldThrowObjectDisposedException()
+        {
+            // Arrange
+            _service.Dispose();
+
+            // Act & Assert
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.CreateSessionAsync(Guid.NewGuid(), Guid.NewGuid()));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.ExecuteCommandAsync(Guid.NewGuid(), Guid.NewGuid(), "Get-Process", (stream, ct) => Task.CompletedTask));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.StopCommandAsync(Guid.NewGuid(), Guid.NewGuid()));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.CloseSessionAsync(Guid.NewGuid(), Guid.NewGuid()));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.GetSessionAsync(Guid.NewGuid(), Guid.NewGuid()));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.CleanIdleSessionsAsync(TimeSpan.FromMinutes(1)));
+        }
     }
 }
