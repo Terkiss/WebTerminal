@@ -11,10 +11,10 @@
 | M5 | PowerShell Session Core Model & Interfaces | done | 2026-06-29 | Terukirdo |
 | M6 | PowerShell Runspace Infrastructure | done | 2026-06-29 | Terukirdo |
 | M7 | Real-Time Stream Execution & Stop Command | done | 2026-06-29 | Terukirdo |
-| M8 | Session Cleanup Worker & Lifetime | In progress | 2026-06-29 | - |
+| M8 | Session Cleanup Worker & Lifetime | done | 2026-06-29 | Terukirdo |
 
 ## Current Active Milestone
-- **Milestone**: M8 (Session Cleanup Worker & Lifetime)
-- **Status**: In progress
+- **Milestone**: None (Phase 3 Completed)
+- **Status**: Completed
 - **Started At**: 2026-06-29
-- **Last Verified**: 2026-06-29 (M7 Approved)
+- **Last Verified**: 2026-06-29 (M8 Approved)
