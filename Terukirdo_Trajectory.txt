@@ -35,3 +35,7 @@
 2026-06-29T02:49:00+09:00 [M2_IMPLEMENT] Milestone 2 (Login UseCase & DTOs) 구현 완료. LoginResponseDto, LoginCommand, LoginCommandHandler 생성.
 2026-06-29T02:49:15+09:00 [M2_TEST] xUnit 단위 테스트 프로젝트 tests/WebPowerShell.Application.UnitTests 생성, 의존성 참조 추가 및 NSubstitute NuGet 패키지 설치.
 2026-06-29T02:49:30+09:00 [M2_VERIFY] git diff --cached --check 검증 중 whitespace 에러 발견 및 LoginCommandHandlerTests.cs 수정 후 재스테이징. dotnet build 및 dotnet test(5개 테스트 통과) 성공.
+2026-06-29T02:53:00+09:00 [M3_IMPLEMENT] Milestone 3 (Change Password UseCase) 구현 완료. ChangePasswordCommand, ChangePasswordCommandHandler 생성.
+2026-06-29T02:53:30+09:00 [M3_TEST] tests/WebPowerShell.Application.UnitTests/ChangePasswordCommandHandlerTests.cs 단위 테스트 파일 생성 (성공, 실패, 복잡성 미달 시나리오 14개 추가).
+2026-06-29T02:53:50+09:00 [M3_VERIFY] git status, git diff --cached --check 확인 (오류 없음), dotnet build -p:UseAppHost=false 및 dotnet test(총 19개 테스트 통과) 성공.
+2026-06-29T02:53:52+09:00 [M3_JUDGE] Tech Expert가 최종 FAIL (Rework Required) 판정 및 DB 실패 에러 구분 / 특수문자 한글 오판 리스크 지적 보고서 제출.
