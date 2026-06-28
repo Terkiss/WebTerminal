@@ -1,10 +1,10 @@
 # MEMORY
 
 ## Current State Snapshot
-- **Focus**: Phase 2 (Authentication & Security) 전체 구현 완료 및 원격 저장소(GitHub) 최종 푸시 완료.
-- **In Progress**: 없음.
+- **Focus**: Phase 3 (PowerShell Session & Tab Management) 전체 구현 및 자율 루프 구동 개시.
+- **In Progress**: Milestone 5 (PowerShell Session Core Model & Interfaces)
 - **Next Steps**:
-  1. 주인님께 원격 푸시 완료 보고.
-  2. Phase 3 (Session & Tab Management) 착수 계획 승인 대기.
+  1. 주인님께 Phase 3 착수 및 Ralph Orchestrator 기동 사실 보고.
+  2. M5 ~ M8 전체 자율 완결 루프 전격 기동.
 - **Known Risks**:
-  - 없음 (모든 변경사항이 안전하게 원격 저장소에 업로드되었습니다).
+  - `System.Management.Automation` 외부 패키지의 호환성 및 OS 권한 격리 모델 검증 필요.
