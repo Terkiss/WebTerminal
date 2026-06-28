@@ -14,11 +14,11 @@
 | M8 | Session Cleanup Worker & Lifetime | done | 2026-06-29 | Terukirdo |
 | M9 | TerminalHub & Hub Authentication Setup | done | 2026-06-29 | Terukirdo |
 | M10 | SignalR Hub Commands & Session Ownership | done | 2026-06-29 | Terukirdo |
-| M11 | Real-Time Stream Event Routing | In progress | 2026-06-29 | - |
-| M12 | Static Frontend with xterm.js & Multi-Tab UI | Not started | 2026-06-29 | - |
+| M11 | Real-Time Stream Event Routing | done | 2026-06-29 | Terukirdo |
+| M12 | Static Frontend with xterm.js & Multi-Tab UI | In progress | 2026-06-29 | - |
 
 ## Current Active Milestone
-- **Milestone**: M11 (Real-Time Stream Event Routing)
+- **Milestone**: M12 (Static Frontend with xterm.js & Multi-Tab UI)
 - **Status**: In progress
 - **Started At**: 2026-06-29
-- **Last Verified**: 2026-06-29 (M10 Approved)
+- **Last Verified**: 2026-06-29 (M11 Approved)
