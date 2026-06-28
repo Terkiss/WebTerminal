@@ -708,8 +708,15 @@ body {
 }
 
 /* xterm custom theme integration styling override */
+.terminal-container-el .xterm {
+    width: 100%;
+    height: 100%;
+    padding: 10px;
+}
 .xterm-viewport {
     background-color: var(--bg-terminal) !important;
+    width: 100% !important;
+    height: 100% !important;
 }
 .xterm-screen {
     font-family: var(--font-mono);

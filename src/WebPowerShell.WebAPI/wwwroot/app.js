@@ -478,6 +478,13 @@ class Tab {
             this.domElement.classList.add('active');
             this.terminal.focus();
             this.fit();
+            // Delay fitting to ensure DOM reflow has completed and container size is accurate
+            setTimeout(() => {
+                this.fit();
+                if (this.terminal) {
+                    this.terminal.refresh(0, this.terminal.rows - 1);
+                }
+            }, 60);
         } else {
             this.tabItemEl.classList.remove('active');
             this.domElement.classList.remove('active');
