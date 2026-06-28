@@ -213,6 +213,9 @@ async function startConnection() {
         // Open initial tab if none exists
         if (state.tabs.size === 0) {
             await createNewTab();
+            setTimeout(() => {
+                showToast('검은색 터미널 화면을 마우스로 클릭하신 후, 키보드로 직접 명령어를 타이핑하십시오.', 'info', 6000);
+            }, 1000);
         }
     } catch (err) {
         updateConnectionBadge('disconnected', 'Disconnected');

@@ -481,6 +481,7 @@ body {
     visibility: hidden;
     opacity: 0;
     transition: opacity 0.2s ease-in-out;
+    cursor: text;
 }
 .terminal-container-el.active {
     visibility: visible;
