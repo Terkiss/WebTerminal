@@ -1,10 +1,10 @@
 # MEMORY
 
 ## Current State Snapshot
-- **Focus**: Git 저장소 초기화, C#용 `.gitignore` 설정 및 최초 커밋(Initial Commit) 완료.
+- **Focus**: PRD 분석을 바탕으로 한 WebPowerShell Clean Architecture 솔루션/프로젝트 구성 및 Phase 1 기반 뼈대 구축 완료.
 - **In Progress**: 없음.
 - **Next Steps**:
-  1. 주인님께 최초 커밋 완료 보고 및 로컬 HEAD 해시 전달.
-  2. C# 웹터미널 프로젝트 개발 요구사항 수립 보좌.
+  1. 주인님께 Phase 1 아키텍처 및 도메인 엔티티/공통 에러 모델/DB Context/레포지토리 패턴 빌드 완료 보고.
+  2. Phase 2 (인증 및 보안 - 로그인, 로그아웃, 비밀번호 만료/변경 등) 구현 착수 대기.
 - **Known Risks**:
-  - 없음 (Working tree clean 상태이며, 표준 `.gitignore` 및 테르키르도 프로토콜 메모리 셋업 완료).
+  - 실제 구동 환경에 적합한 DB 공급자 표준(PostgreSQL vs SQL Server) 조율 필요. (DbContext 매핑 규칙은 완성되어 공급자 유연함 확보됨)

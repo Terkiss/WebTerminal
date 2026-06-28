@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WebPowerShell.Application/WebPowerShell.Application.csproj" />
+    <Project Path="src/WebPowerShell.Domain/WebPowerShell.Domain.csproj" />
+    <Project Path="src/WebPowerShell.Infrastructure/WebPowerShell.Infrastructure.csproj" />
+    <Project Path="src/WebPowerShell.WebAPI/WebPowerShell.WebAPI.csproj" />
+  </Folder>
+</Solution>

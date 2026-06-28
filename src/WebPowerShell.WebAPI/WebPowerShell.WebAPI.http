@@ -1,0 +1,6 @@
+@WebPowerShell.WebAPI_HostAddress = http://localhost:5255
+
+GET {{WebPowerShell.WebAPI_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
