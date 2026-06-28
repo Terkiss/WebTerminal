@@ -193,5 +193,134 @@ namespace WebPowerShell.WebAPI.IntegrationTests
             // Clean up
             await _service.CloseSessionAsync(userId, tabId);
         }
+
+        [Fact]
+        public async Task ExecuteCommandAsync_ShouldStreamStandardOutput()
+        {
+            // Arrange
+            var userId = Guid.NewGuid();
+            var tabId = Guid.NewGuid();
+            await _service.CreateSessionAsync(userId, tabId);
+
+            var outputReceived = new TaskCompletionSource<string>();
+
+            // Act
+            var result = await _service.ExecuteCommandAsync(
+                userId,
+                tabId,
+                "Write-Output 'TestMessage'",
+                (streamData, ct) =>
+                {
+                    if (streamData.Type == PowerShellStreamType.Output)
+                    {
+                        outputReceived.TrySetResult(streamData.Content);
+                    }
+                    return Task.CompletedTask;
+                }
+            );
+
+            // Assert
+            Assert.True(result.IsSuccess);
+
+            var completedTask = await Task.WhenAny(outputReceived.Task, Task.Delay(5000));
+            Assert.Same(outputReceived.Task, completedTask);
+
+            var content = await outputReceived.Task;
+            Assert.Equal("TestMessage", content);
+
+            // Clean up
+            await _service.CloseSessionAsync(userId, tabId);
+        }
+
+        [Fact]
+        public async Task ExecuteCommandAsync_ShouldStreamErrorOutput()
+        {
+            // Arrange
+            var userId = Guid.NewGuid();
+            var tabId = Guid.NewGuid();
+            await _service.CreateSessionAsync(userId, tabId);
+
+            var errorReceived = new TaskCompletionSource<string>();
+
+            // Act
+            var result = await _service.ExecuteCommandAsync(
+                userId,
+                tabId,
+                "Write-Error 'TestError'",
+                (streamData, ct) =>
+                {
+                    if (streamData.Type == PowerShellStreamType.Error)
+                    {
+                        errorReceived.TrySetResult(streamData.Content);
+                    }
+                    return Task.CompletedTask;
+                }
+            );
+
+            // Assert
+            Assert.True(result.IsSuccess);
+
+            var completedTask = await Task.WhenAny(errorReceived.Task, Task.Delay(5000));
+            Assert.Same(errorReceived.Task, completedTask);
+
+            var content = await errorReceived.Task;
+            Assert.Contains("TestError", content);
+
+            // Clean up
+            await _service.CloseSessionAsync(userId, tabId);
+        }
+
+        [Fact]
+        public async Task StopCommandAsync_ShouldStopRunningCommandAndReleaseLock()
+        {
+            // Arrange
+            var userId = Guid.NewGuid();
+            var tabId = Guid.NewGuid();
+            await _service.CreateSessionAsync(userId, tabId);
+
+            var commandStarted = new TaskCompletionSource<bool>();
+
+            // Act
+            var runTask = _service.ExecuteCommandAsync(
+                userId,
+                tabId,
+                "Write-Output 'Started'; Start-Sleep -Seconds 10",
+                (streamData, ct) =>
+                {
+                    if (streamData.Type == PowerShellStreamType.Output && streamData.Content == "Started")
+                    {
+                        commandStarted.TrySetResult(true);
+                    }
+                    return Task.CompletedTask;
+                }
+            );
+
+            // 명령어가 시작될 때까지 최대 5초 대기
+            var startCompleted = await Task.WhenAny(commandStarted.Task, Task.Delay(5000));
+            Assert.Same(commandStarted.Task, startCompleted);
+            Assert.True(await commandStarted.Task);
+
+            // 명령어 실행 중 중지 호출
+            var stopResult = await _service.StopCommandAsync(userId, tabId);
+            Assert.True(stopResult.IsSuccess);
+
+            // 중단 호출 후 runTask가 완료되는지 대기 (타임아웃 5초)
+            var runCompleted = await Task.WhenAny(runTask, Task.Delay(5000));
+            Assert.Same(runTask, runCompleted);
+
+            await runTask;
+
+            // Assert: 락이 해제되어 새로운 명령을 즉시 다시 실행할 수 있는지 검증
+            var nextResult = await _service.ExecuteCommandAsync(
+                userId,
+                tabId,
+                "Write-Output 'Next'",
+                (streamData, ct) => Task.CompletedTask
+            );
+            Assert.True(nextResult.IsSuccess, "락이 해제되지 않아 다음 명령 실행에 실패했습니다.");
+
+            // Clean up
+            await _service.CloseSessionAsync(userId, tabId);
+        }
     }
 }

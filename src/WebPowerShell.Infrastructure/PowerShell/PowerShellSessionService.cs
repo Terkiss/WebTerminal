@@ -4,9 +4,11 @@ using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using WebPowerShell.Application.Common.Interfaces;
 using WebPowerShell.Application.Sessions.Common;
+using PowerShellStreamType = WebPowerShell.Application.Sessions.Common.PowerShellStreamType;
 using WebPowerShell.Domain.Common;
 using WebPowerShell.Domain.Entities;
 
@@ -115,22 +117,44 @@ namespace WebPowerShell.Infrastructure.PowerShell
                 return Result<bool>.Fail(AppFailure.SessionBusy);
             }
 
+            var channel = Channel.CreateUnbounded<PowerShellStreamData>(new UnboundedChannelOptions
+            {
+                SingleReader = true,
+                SingleWriter = false
+            });
+
+            var consumerTask = Task.Run(async () =>
+            {
+                await foreach (var data in channel.Reader.ReadAllAsync(cancellationToken))
+                {
+                    try
+                    {
+                        await onStream(data, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "onStream callback error");
+                    }
+                }
+            });
+
+            System.Management.Automation.PowerShell ps = System.Management.Automation.PowerShell.Create();
             try
             {
-                // Milestone 7의 실제 구현 전 가구현용 뼈대 코드
-                var ps = System.Management.Automation.PowerShell.Create();
                 ps.Runspace = entry.Runspace;
                 entry.PowerShellInstance = ps;
+                ps.AddScript(command);
 
-                if (onStream != null)
-                {
-                    await onStream(new PowerShellStreamData
-                    {
-                        Type = Application.Sessions.Common.PowerShellStreamType.Output,
-                        Content = $"Running: {command}",
-                        Timestamp = _timeProvider.GetUtcNow()
-                    }, cancellationToken);
-                }
+                var output = new PSDataCollection<PSObject>();
+
+                var sessionId = entry.SessionMetadata.SessionId;
+                RegisterStreamHandler(output, channel.Writer, PowerShellStreamType.Output, sessionId);
+                RegisterStreamHandler(ps.Streams.Error, channel.Writer, PowerShellStreamType.Error, sessionId);
+                RegisterStreamHandler(ps.Streams.Warning, channel.Writer, PowerShellStreamType.Warning, sessionId);
+                RegisterStreamHandler(ps.Streams.Verbose, channel.Writer, PowerShellStreamType.Verbose, sessionId);
+
+                var settings = new PSInvocationSettings();
+                await ps.InvokeAsync<PSObject, PSObject>(null, output, settings, null, null);
 
                 return Result<bool>.Success(true);
             }
@@ -141,28 +165,43 @@ namespace WebPowerShell.Infrastructure.PowerShell
             }
             finally
             {
-                if (entry.PowerShellInstance != null)
+                channel.Writer.Complete();
+                try
                 {
-                    try
-                    {
-                        entry.PowerShellInstance.Dispose();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "명령어 실행 후 PowerShellInstance Dispose 중 오류 발생. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
-                    }
-                    entry.PowerShellInstance = null;
+                    await consumerTask;
                 }
-                entry.Lock.Release();
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "consumerTask 대기 중 오류 발생. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                }
+
+                entry.PowerShellInstance = null;
+                try
+                {
+                    ps.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "명령어 실행 후 PowerShellInstance Dispose 중 오류 발생. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                }
+
+                try
+                {
+                    entry.Lock.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // 락이 이미 Dispose된 경우 안전하게 무시
+                }
             }
         }
 
-        public Task<Result<bool>> StopCommandAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default)
+        public async Task<Result<bool>> StopCommandAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default)
         {
             var key = (userId, tabId);
             if (!_sessions.TryGetValue(key, out var entry))
             {
-                return Task.FromResult(Result<bool>.Fail(AppFailure.SessionNotFound));
+                return Result<bool>.Fail(AppFailure.SessionNotFound);
             }
 
             var utcNow = _timeProvider.GetUtcNow();
@@ -170,9 +209,11 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
             try
             {
-                if (entry.PowerShellInstance != null)
+                var ps = entry.PowerShellInstance;
+                if (ps != null)
                 {
-                    entry.PowerShellInstance.Stop();
+                    // 비동기적으로 중단 작업을 태스크로 실행하여 대기
+                    await Task.Run(() => ps.Stop(), cancellationToken);
                 }
             }
             catch (Exception ex)
@@ -180,7 +221,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
                 _logger.LogWarning(ex, "PowerShell 인스턴스를 중단하는 중 예외가 발생했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
             }
 
-            return Task.FromResult(Result<bool>.Success(true));
+            return Result<bool>.Success(true);
         }
 
         public async Task<Result<bool>> CloseSessionAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default)
@@ -212,11 +253,12 @@ namespace WebPowerShell.Infrastructure.PowerShell
             if (entry == null) return;
 
             // 1. 실행 중인 PowerShell 인스턴스 정지
-            if (entry.PowerShellInstance != null)
+            var ps = entry.PowerShellInstance;
+            if (ps != null)
             {
                 try
                 {
-                    entry.PowerShellInstance.Stop();
+                    ps.Stop();
                 }
                 catch (Exception ex)
                 {
@@ -247,11 +289,12 @@ namespace WebPowerShell.Infrastructure.PowerShell
             // 3. 안전하게 Runspace와 SemaphoreSlim 등의 리소스를 Dispose 및 Close
             try
             {
-                if (entry.PowerShellInstance != null)
+                var psToDispose = entry.PowerShellInstance;
+                if (psToDispose != null)
                 {
                     try
                     {
-                        entry.PowerShellInstance.Dispose();
+                        psToDispose.Dispose();
                     }
                     catch (Exception ex)
                     {
@@ -292,6 +335,39 @@ namespace WebPowerShell.Infrastructure.PowerShell
                     _logger.LogError(ex, "SemaphoreSlim Lock을 Dispose하는 중 오류가 발생했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
                 }
             }
+        }
+
+        private void RegisterStreamHandler<T>(
+            PSDataCollection<T> collection,
+            ChannelWriter<PowerShellStreamData> writer,
+            PowerShellStreamType streamType,
+            Guid sessionId)
+        {
+            collection.DataAdded += (sender, args) =>
+            {
+                try
+                {
+                    if (args.Index >= 0 && args.Index < collection.Count)
+                    {
+                        var item = collection[args.Index];
+                        var text = item?.ToString();
+                        if (text != null)
+                        {
+                            var data = new PowerShellStreamData
+                            {
+                                Type = streamType,
+                                Content = text,
+                                Timestamp = _timeProvider.GetUtcNow()
+                            };
+                            writer.TryWrite(data);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "{StreamType} DataAdded 처리 중 오류 발생. SessionId: {SessionId}", streamType, sessionId);
+                }
+            };
         }
 
         private class SessionEntry
