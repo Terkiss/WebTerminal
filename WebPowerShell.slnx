@@ -5,4 +5,7 @@
     <Project Path="src/WebPowerShell.Infrastructure/WebPowerShell.Infrastructure.csproj" />
     <Project Path="src/WebPowerShell.WebAPI/WebPowerShell.WebAPI.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WebPowerShell.Application.UnitTests/WebPowerShell.Application.UnitTests.csproj" />
+  </Folder>
 </Solution>
