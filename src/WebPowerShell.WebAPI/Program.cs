@@ -12,6 +12,7 @@ using WebPowerShell.Domain.Common;
 using WebPowerShell.Infrastructure.Persistence;
 using WebPowerShell.Infrastructure.Persistence.Repositories;
 using WebPowerShell.Infrastructure.Security;
+using WebPowerShell.Infrastructure.PowerShell;
 using WebPowerShell.WebAPI.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -23,6 +24,7 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<IPowerShellSessionService, PowerShellSessionService>();
 
 // Handlers
 builder.Services.AddScoped<LoginCommandHandler>();

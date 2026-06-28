@@ -1,10 +1,10 @@
 # MEMORY
 
 ## Current State Snapshot
-- **Focus**: Phase 3 (PowerShell Session & Tab Management) 전체 구현 및 자율 루프 구동 개시.
-- **In Progress**: Milestone 5 (PowerShell Session Core Model & Interfaces)
+- **Focus**: Phase 3 (PowerShell Session & Tab Management) - Milestone 6 Rework 검토 및 검증.
+- **In Progress**: Milestone 6 (PowerShell Runspace Infrastructure) Rework 검토 완료.
 - **Next Steps**:
-  1. 주인님께 Phase 3 착수 및 Ralph Orchestrator 기동 사실 보고.
-  2. M5 ~ M8 전체 자율 완결 루프 전격 기동.
+  1. 주인님께 Milestone 6 Rework 검토 결과 보고 및 승인 획득.
+  2. 승인 시 다음 마일스톤(Milestone 7: PowerShell Execution & Stream Pipeline) 착수.
 - **Known Risks**:
   - `System.Management.Automation` 외부 패키지의 호환성 및 OS 권한 격리 모델 검증 필요.

@@ -39,7 +39,7 @@ namespace WebPowerShell.Application.UnitTests.Sessions
         public void PowerShellStreamData_ShouldSetPropertiesCorrectly()
         {
             // Arrange
-            var type = "Output";
+            var type = PowerShellStreamType.Output;
             var content = "Hello, PowerShell!";
             var timestamp = DateTimeOffset.UtcNow;
 
