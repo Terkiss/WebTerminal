@@ -1,0 +1,37 @@
+## Ignore Visual Studio Temporary Files and Build Outputs
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Re]leases/
+x64/
+x86/
+[Aa]rm/
+[Aa]rm64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Log]s/
+[Tt]est[Rr]esults/
+
+# Visual Studio cache directory
+.vs/
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider & VS Code settings
+.idea/
+.vscode/
+
+# Local configuration
+*.local.json
+
+# Antigravity/Agents temp files and logs
+.agents/**/tmp/
+.agents/**/*.log
+.agents/**/TestResults/
