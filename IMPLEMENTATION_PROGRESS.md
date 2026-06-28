@@ -7,10 +7,10 @@
 | M1 | Password Hashing Infrastructure | done | 2026-06-29 | Terukirdo |
 | M2 | Login UseCase & DTOs | done | 2026-06-29 | Terukirdo |
 | M3 | Change Password UseCase | done | 2026-06-29 | Terukirdo |
-| M4 | Rate Limiting & Expiry Policy | Not started | 2026-06-29 | - |
+| M4 | Rate Limiting & Expiry Policy | In progress | 2026-06-29 | - |
 
 ## Current Active Milestone
-- **Milestone**: M3 (Change Password UseCase)
-- **Status**: done
+- **Milestone**: M4 (Rate Limiting & Expiry Policy)
+- **Status**: In progress
 - **Started At**: 2026-06-29
 - **Last Verified**: 2026-06-29 (M3 Approved)
