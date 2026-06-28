@@ -192,7 +192,29 @@ app.MapGet("/api/weatherforecast", () =>
 .WithName("GetWeatherForecast")
 .RequireAuthorization();
 
+
+using (var scope = app.Services.CreateScope())
+{
+    var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var hasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher>();
+    if (!context.Users.Any())
+    {
+        context.Users.Add(new WebPowerShell.Domain.Entities.User
+        {
+            Id = Guid.NewGuid(),
+            Username = "operator01",
+            PasswordHash = hasher.HashPassword("Password123!"),
+            LastPasswordChangeDate = DateTimeOffset.UtcNow,
+            IsActive = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow
+        });
+        context.SaveChanges();
+    }
+}
+
 app.Run();
+
 
 record WeatherForecast(DateOnly Date, int TemperatureC, string? Summary)
 {
