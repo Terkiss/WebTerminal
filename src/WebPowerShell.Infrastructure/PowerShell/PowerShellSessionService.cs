@@ -162,7 +162,24 @@ namespace WebPowerShell.Infrastructure.PowerShell
                 var settings = new PSInvocationSettings();
                 await ps.InvokeAsync<PSObject, PSObject>(null, output, settings, null, null);
 
-                if (ps.HadErrors)
+                var hadErrors = ps.HadErrors;
+
+                try
+                {
+                    ps.Commands.Clear();
+                    ps.AddScript("$ExecutionContext.SessionState.Path.CurrentLocation.Path");
+                    var dirResults = await ps.InvokeAsync();
+                    if (dirResults.Count > 0 && dirResults[0] != null)
+                    {
+                        entry.CurrentDirectory = dirResults[0].ToString() ?? "C:\\";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "명령어 실행 완료 후 디렉토리 갱신에 실패했습니다. SessionId: {SessionId}", entry.SessionMetadata.SessionId);
+                }
+
+                if (hadErrors)
                 {
                     return Result<bool>.Success(false);
                 }
@@ -297,6 +314,18 @@ namespace WebPowerShell.Infrastructure.PowerShell
             }
 
             return Result<int>.Success(successCount);
+        }
+
+        public Task<string> GetCurrentDirectoryAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            var key = (userId, tabId);
+            if (!_sessions.TryGetValue(key, out var entry))
+            {
+                return Task.FromResult("C:\\");
+            }
+
+            return Task.FromResult(entry.CurrentDirectory);
         }
 
         private void ThrowIfDisposed()
@@ -572,6 +601,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
             public required Runspace Runspace { get; init; }
             public System.Management.Automation.PowerShell? PowerShellInstance { get; set; }
             public required SemaphoreSlim Lock { get; init; }
+            public string CurrentDirectory { get; set; } = "C:\\";
         }
     }
 }

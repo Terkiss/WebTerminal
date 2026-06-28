@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebPowerShell - Premium Web Terminal</title>
+    <meta name="description" content="Next-generation PowerShell Web Terminal. Multi-tab management, real-time command execution, secure session environment, and stunning glassmorphism user interface.">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-iecdLmaskl7CVkqkXNQ/ZH/XLlvWZOJyj7Yy7tcenmpD1ypASozpmT/E0iPtmFIB46ZmdtAc9eNBvH0H/ZpiBw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    
+    <!-- xterm.js -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xterm/5.3.0/xterm.min.js"></script>
+    
+    <!-- SignalR Client -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/8.0.0/signalr.min.js"></script>
+    
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- App Background Effect -->
+    <div class="bg-glow bg-glow-primary"></div>
+    <div class="bg-glow bg-glow-secondary"></div>
+    
+    <!-- Toast Notification Container -->
+    <div id="toastContainer" class="toast-container"></div>
+    
+    <!-- Sidebar Overlay for Mobile View -->
+    <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
+    <!-- MAIN APP CONTAINER -->
+    <div id="appContainer" class="app-container hidden">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon"><i class="fa-solid fa-terminal"></i></span>
+                    <span class="logo-text">Web<span>PS</span></span>
+                </div>
+            </div>
+            
+            <div class="sidebar-menu">
+                <div class="menu-label">
+                    <span>Active Sessions</span>
+                    <button id="btnNewTab" class="btn-icon-add" title="New Session Tab (Ctrl+T)">
+                        <i class="fa-solid fa-plus"></i>
+                    </button>
+                </div>
+                <div id="tabList" class="tab-list">
+                    <!-- Dynamic Tabs will be loaded here -->
+                </div>
+            </div>
+            
+            <div class="sidebar-footer">
+                <div class="user-profile">
+                    <div class="user-avatar">
+                        <i class="fa-solid fa-user-shield"></i>
+                    </div>
+                    <div class="user-info">
+                        <div class="username" id="displayUsername">Admin</div>
+                        <div class="user-role">Administrator</div>
+                    </div>
+                </div>
+                
+                <div class="footer-actions">
+                    <button id="btnOpenChangePassword" class="btn-action" title="Change Password">
+                        <i class="fa-solid fa-key"></i>
+                        <span>Security</span>
+                    </button>
+                    <button id="btnLogout" class="btn-action btn-logout" title="Log Out">
+                        <i class="fa-solid fa-right-from-bracket"></i>
+                        <span>Log Out</span>
+                    </button>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <header class="topbar">
+                <div class="topbar-left">
+                    <button id="btnToggleSidebar" class="btn-toggle-sidebar" title="Toggle Sidebar">
+                        <i class="fa-solid fa-bars"></i>
+                    </button>
+                    <div class="session-info">
+                        <h1 class="session-title" id="currentTabTitle">Console Session</h1>
+                        <span class="session-status" id="connectionStatusBadge">
+                            <span class="status-dot dot-connecting"></span>
+                            <span class="status-text">Connecting</span>
+                        </span>
+                    </div>
+                </div>
+                
+                <div class="topbar-right">
+                    <div class="action-buttons">
+                        <button id="btnStopCommand" class="btn-control btn-stop-command" title="Stop current execution (Ctrl+C)" disabled>
+                            <i class="fa-solid fa-circle-stop"></i> Stop Execution
+                        </button>
+                        <button id="btnClearScreen" class="btn-control" title="Clear Terminal buffer">
+                            <i class="fa-solid fa-eraser"></i> Clear
+                        </button>
+                    </div>
+                </div>
+            </header>
+            
+            <!-- Connection Progress bar -->
+            <div id="executionProgressBar" class="progress-bar-container">
+                <div class="progress-bar-fill"></div>
+            </div>
+            
+            <!-- Terminal Workspace -->
+            <div class="terminal-workspace">
+                <div id="terminalContainers" class="terminal-containers-wrapper">
+                    <!-- Dynamic Xterm.js target elements will be loaded here -->
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- LOGIN MODAL / OVERLAY -->
+    <div id="loginOverlay" class="overlay active">
+        <div class="glass-card login-card">
+            <div class="card-header">
+                <div class="logo">
+                    <span class="logo-icon"><i class="fa-solid fa-terminal"></i></span>
+                    <span class="logo-text">Web<span>PS</span></span>
+                </div>
+                <h2>Security Authentication</h2>
+                <p>Welcome to WebPowerShell. Enter your credentials to access the terminal.</p>
+            </div>
+            
+            <form id="loginForm" class="auth-form">
+                <div class="form-group">
+                    <label for="loginUsername">Username</label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-user"></i>
+                        <input type="text" id="loginUsername" placeholder="Enter username" required autocomplete="username">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="loginPassword">Password</label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-lock"></i>
+                        <input type="password" id="loginPassword" placeholder="Enter password" required autocomplete="current-password">
+                    </div>
+                </div>
+                
+                <div id="loginErrorMsg" class="auth-error-message hidden">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                    <span>Invalid credentials. Please try again.</span>
+                </div>
+                
+                <button type="submit" id="btnLoginSubmit" class="btn-submit">
+                    <span>Authenticate</span>
+                    <i class="fa-solid fa-arrow-right"></i>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- CHANGE PASSWORD MODAL -->
+    <div id="changePasswordOverlay" class="overlay">
+        <div class="glass-card change-password-card">
+            <div class="card-header">
+                <div class="modal-icon"><i class="fa-solid fa-shield-halved"></i></div>
+                <h2>Change Password</h2>
+                <p>Update your account security by selecting a strong, unique password.</p>
+            </div>
+            
+            <form id="changePasswordForm" class="auth-form">
+                <div class="form-group">
+                    <label for="oldPassword">Current Password</label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-key"></i>
+                        <input type="password" id="oldPassword" placeholder="Enter current password" required autocomplete="current-password">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="newPassword">New Password</label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-lock"></i>
+                        <input type="password" id="newPassword" placeholder="Minimum 8 characters" required autocomplete="new-password">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="confirmNewPassword">Confirm New Password</label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-circle-check"></i>
+                        <input type="password" id="confirmNewPassword" placeholder="Confirm your new password" required autocomplete="new-password">
+                    </div>
+                </div>
+                
+                <div id="changePasswordErrorMsg" class="auth-error-message hidden">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                    <span>Passwords do not match.</span>
+                </div>
+                
+                <div class="modal-actions">
+                    <button type="button" id="btnCancelChangePassword" class="btn-cancel">Cancel</button>
+                    <button type="submit" id="btnChangePasswordSubmit" class="btn-submit">
+                        <span>Change Password</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Custom Client-Side JS -->
+    <script src="app.js"></script>
+</body>
+</html>

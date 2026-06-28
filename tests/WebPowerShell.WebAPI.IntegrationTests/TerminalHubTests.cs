@@ -322,7 +322,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             eventSequence.Enqueue("Output");
             outputTcs.TrySetResult((id, content));
         });
-        connection.On<Guid, bool>("CommandCompleted", (id, success) =>
+        connection.On<Guid, bool, string>("CommandCompleted", (id, success, dir) =>
         {
             eventSequence.Enqueue("Completed");
             completedTcs.TrySetResult((id, success));
@@ -382,7 +382,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             eventSequence.Enqueue("Error");
             errorTcs.TrySetResult((id, content));
         });
-        connection.On<Guid, bool>("CommandCompleted", (id, success) =>
+        connection.On<Guid, bool, string>("CommandCompleted", (id, success, dir) =>
         {
             eventSequence.Enqueue("Completed");
             completedTcs.TrySetResult((id, success));

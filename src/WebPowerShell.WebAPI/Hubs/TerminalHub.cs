@@ -117,8 +117,10 @@ public class TerminalHub : Hub
         }
         finally
         {
+            string currentDirectory = "C:\\";
+            currentDirectory = await _sessionService.GetCurrentDirectoryAsync(userId, tabId, Context.ConnectionAborted);
             bool isSuccess = result is { IsSuccess: true, Value: true };
-            await Clients.Caller.SendAsync("CommandCompleted", tabId, isSuccess, Context.ConnectionAborted);
+            await Clients.Caller.SendAsync("CommandCompleted", tabId, isSuccess, currentDirectory, Context.ConnectionAborted);
         }
     }
 
