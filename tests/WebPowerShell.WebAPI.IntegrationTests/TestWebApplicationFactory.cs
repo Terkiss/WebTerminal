@@ -13,6 +13,11 @@ namespace WebPowerShell.WebAPI.IntegrationTests
 {
     public class TestWebApplicationFactory : WebApplicationFactory<Program>
     {
+        public TestWebApplicationFactory()
+        {
+            ClientOptions.BaseAddress = new Uri("https://localhost");
+        }
+
         public FakeTimeProvider TimeProvider { get; } = new FakeTimeProvider(new DateTimeOffset(2026, 6, 29, 3, 0, 0, TimeSpan.Zero));
         public string DbName { get; } = Guid.NewGuid().ToString();
 

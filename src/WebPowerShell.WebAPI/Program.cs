@@ -4,6 +4,7 @@ using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using WebPowerShell.Application.Common.Interfaces;
@@ -22,6 +23,12 @@ var builder = WebApplication.CreateBuilder(args);
 // DB Context & Repository
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseInMemoryDatabase("WebPowerShellDb"));
+
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownProxies.Clear();
+});
 
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
@@ -47,6 +54,11 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
     .AddCookie(options =>
     {
         options.Cookie.Name = ".AspNetCore.Cookies";
+        options.Cookie.HttpOnly = true;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+        options.Cookie.SameSite = SameSiteMode.Strict;
+        options.ExpireTimeSpan = TimeSpan.FromHours(8);
+        options.SlidingExpiration = true;
         options.Events.OnRedirectToLogin = context =>
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -66,15 +78,7 @@ builder.Services.AddRateLimiter(options =>
 {
     options.AddPolicy("LoginLimiter", httpContext =>
     {
-        string ipAddress = "unknown";
-        if (httpContext.Request.Headers.TryGetValue("X-Forwarded-For", out var forwardedFor))
-        {
-            ipAddress = forwardedFor.ToString();
-        }
-        else
-        {
-            ipAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        }
+        string ipAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
 
         return RateLimitPartition.GetFixedWindowLimiter(ipAddress, _ => new FixedWindowRateLimiterOptions
         {
@@ -95,6 +99,8 @@ builder.Services.AddRateLimiter(options =>
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
+app.UseForwardedHeaders();
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
