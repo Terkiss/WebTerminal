@@ -83,7 +83,13 @@ public class TeruTeruEngine : ITeruTeruEngine
             await OnOutput(new ShellOutputPayload { Type = "system", Text = text + "\r\n", Color = "cyan" });
         }
 
-
+        public async Task WritePromptAsync()
+        {
+            string dir = FileSystem.CurrentDirectory;
+            if (string.IsNullOrEmpty(dir)) dir = "/";
+            string prompt = $"\r\n\x1b[1;32mteru@shell \x1b[1;34m{dir}\x1b[1;32m> \x1b[0m";
+            await OnOutput(new ShellOutputPayload { Type = "prompt", Text = prompt });
+        }
     }
 
     private readonly ILogger<TeruTeruEngine> _logger;
@@ -136,6 +142,7 @@ public class TeruTeruEngine : ITeruTeruEngine
         _logger.LogInformation("Created TeruTeruSession {SessionId} for User {UserId} Tab {TabId}", session.SessionId, userId, tabId);
         
         await context.WriteSystemAsync("Welcome to TeruTeruShell!");
+        await context.WritePromptAsync();
         
         return Result<PowerShellSession>.Success(session);
     }
@@ -162,6 +169,7 @@ public class TeruTeruEngine : ITeruTeruEngine
             var parsed = _parser.Parse(command);
             if (string.IsNullOrEmpty(parsed.CommandName))
             {
+                await context.WritePromptAsync();
                 return Result<bool>.Success(true);
             }
 
@@ -187,17 +195,20 @@ public class TeruTeruEngine : ITeruTeruEngine
                     await context.WriteErrorAsync($"Command not found: {parsed.CommandName}");
                 }
                 
+                await context.WritePromptAsync();
                 return Result<bool>.Success(true);
             }
             catch (OperationCanceledException)
             {
                 await context.WriteErrorAsync("Command execution stopped.");
+                await context.WritePromptAsync();
                 return Result<bool>.Success(true);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error executing command");
                 await context.WriteErrorAsync(ex.Message);
+                await context.WritePromptAsync();
                 return Result<bool>.Fail(AppFailure.InternalError);
             }
         }
