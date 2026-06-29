@@ -148,6 +148,9 @@ namespace WebPowerShell.Infrastructure.PowerShell
                 ps.Runspace = entry.Runspace;
                 entry.PowerShellInstance = ps;
                 ps.AddScript(command);
+                
+                // Add Out-String to force formatting like a normal console and return strings instead of raw PSObjects
+                ps.AddCommand("Out-String").AddParameter("Stream", true);
 
                 var output = new PSDataCollection<PSObject>();
 
@@ -578,6 +581,16 @@ namespace WebPowerShell.Infrastructure.PowerShell
                         var text = item?.ToString();
                         if (text != null)
                         {
+                            // Ensure xterm.js gets proper carriage return + line feed for each output item
+                            if (!text.EndsWith("\n"))
+                            {
+                                text += "\r\n";
+                            }
+                            else if (text.EndsWith("\n") && !text.EndsWith("\r\n"))
+                            {
+                                text = text.Replace("\n", "\r\n");
+                            }
+
                             var data = new PowerShellStreamData
                             {
                                 Type = streamType,
