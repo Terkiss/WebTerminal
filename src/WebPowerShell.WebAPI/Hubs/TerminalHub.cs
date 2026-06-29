@@ -1,11 +1,9 @@
 using System;
-using System.Security.Claims;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using WebPowerShell.Application.Common.Interfaces;
-using WebPowerShell.Application.Sessions.Common;
 using WebPowerShell.Domain.Common;
 
 namespace WebPowerShell.WebAPI.Hubs;
@@ -15,11 +13,13 @@ public class TerminalHub : Hub
 {
     private readonly ILogger<TerminalHub> _logger;
     private readonly IPowerShellSessionService _sessionService;
+    private readonly IHubContext<TerminalHub> _hubContext;
 
-    public TerminalHub(ILogger<TerminalHub> logger, IPowerShellSessionService sessionService)
+    public TerminalHub(ILogger<TerminalHub> logger, IPowerShellSessionService sessionService, IHubContext<TerminalHub> hubContext)
     {
         _logger = logger;
         _sessionService = sessionService;
+        _hubContext = hubContext;
     }
 
     public override async Task OnConnectedAsync()
@@ -55,7 +55,28 @@ public class TerminalHub : Hub
             return HubResponse.Fail(AppFailure.Unauthorized);
         }
 
-        var result = await _sessionService.CreateSessionAsync(userId, tabId, Context.ConnectionAborted);
+        var connectionId = Context.ConnectionId;
+
+        var result = await _sessionService.CreateSessionAsync(
+            userId, 
+            tabId,
+            onOutput: async (output) => 
+            {
+                try { await _hubContext.Clients.Client(connectionId).SendAsync("ReceiveOutput", tabId, output); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send ReceiveOutput"); }
+            },
+            onError: async (error) => 
+            {
+                try { await _hubContext.Clients.Client(connectionId).SendAsync("ReceiveError", tabId, error); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send ReceiveError"); }
+            },
+            onExited: async () => 
+            {
+                try { await _hubContext.Clients.Client(connectionId).SendAsync("SessionExited", tabId); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send SessionExited"); }
+            },
+            Context.ConnectionAborted);
+
         if (!result.IsSuccess)
         {
             return HubResponse.Fail(result.Failure!);
@@ -71,57 +92,25 @@ public class TerminalHub : Hub
             return HubResponse.Fail(AppFailure.Unauthorized);
         }
 
-        // 명령 시작 이벤트 발송
-        await Clients.Caller.SendAsync("CommandStarted", tabId, Context.ConnectionAborted);
-
-        Result<bool>? result = null;
-        try
+        // PtyProcess에 직접 명령 문자열(또는 개별 키 입력)을 전달
+        // 기존 프론트엔드가 완성된 커맨드를 보내는 방식이라면 \n을 추가해서 보냄
+        string inputToWrite = command;
+        if (!inputToWrite.EndsWith("\n") && !inputToWrite.EndsWith("\r"))
         {
-            result = await _sessionService.ExecuteCommandAsync(
-                userId,
-                tabId,
-                command,
-                async (streamData, ct) =>
-                {
-                    // 스트림 데이터 구분 라우팅
-                    switch (streamData.Type)
-                    {
-                        case PowerShellStreamType.Output:
-                            await Clients.Caller.SendAsync("ReceiveOutput", tabId, streamData.Content, ct);
-                            break;
-                        case PowerShellStreamType.Error:
-                            await Clients.Caller.SendAsync("ReceiveError", tabId, streamData.Content, ct);
-                            break;
-                        case PowerShellStreamType.Warning:
-                            await Clients.Caller.SendAsync("ReceiveWarning", tabId, streamData.Content, ct);
-                            break;
-                        case PowerShellStreamType.Verbose:
-                            await Clients.Caller.SendAsync("ReceiveVerbose", tabId, streamData.Content, ct);
-                            break;
-                        case PowerShellStreamType.Debug:
-                            await Clients.Caller.SendAsync("ReceiveDebug", tabId, streamData.Content, ct);
-                            break;
-                        case PowerShellStreamType.Information:
-                            await Clients.Caller.SendAsync("ReceiveInformation", tabId, streamData.Content, ct);
-                            break;
-                    }
-                },
-                Context.ConnectionAborted);
-
-            if (!result.IsSuccess)
-            {
-                return HubResponse.Fail(result.Failure!);
-            }
-
-            return HubResponse.Ok();
+            inputToWrite += "\n";
         }
-        finally
+
+        var result = await _sessionService.WriteInputAsync(userId, tabId, inputToWrite, Context.ConnectionAborted);
+
+        if (!result.IsSuccess)
         {
-            string currentDirectory = "C:\\";
-            currentDirectory = await _sessionService.GetCurrentDirectoryAsync(userId, tabId, Context.ConnectionAborted);
-            bool isSuccess = result is { IsSuccess: true, Value: true };
-            await Clients.Caller.SendAsync("CommandCompleted", tabId, isSuccess, currentDirectory, Context.ConnectionAborted);
+            return HubResponse.Fail(result.Failure!);
         }
+
+        // 기존 클라이언트가 CommandCompleted를 기다렸으나, PTY 방식에서는 명령 완료 개념이 없으므로
+        // 더 이상 CommandCompleted 이벤트를 강제로 발생시키지 않습니다.
+
+        return HubResponse.Ok();
     }
 
     public async Task<HubResponse> StopCommand(Guid tabId)

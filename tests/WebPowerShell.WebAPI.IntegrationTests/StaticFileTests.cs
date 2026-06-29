@@ -28,7 +28,7 @@ namespace WebPowerShell.WebAPI.IntegrationTests
             
             var content = await response.Content.ReadAsStringAsync();
             Assert.Contains("<title>WebPowerShell - Premium Web Terminal</title>", content);
-            Assert.Contains("xterm.min.js", content);
+            Assert.Contains("xterm.js", content);
             Assert.Contains("signalr.min.js", content);
         }
 

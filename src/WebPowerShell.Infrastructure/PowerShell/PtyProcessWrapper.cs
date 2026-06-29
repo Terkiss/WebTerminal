@@ -122,7 +122,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
                 if (!_process.HasExited)
                 {
-                    _process.Kill();
+                    _process.Kill(true);
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
                     try
                     {
@@ -184,6 +184,13 @@ namespace WebPowerShell.Infrastructure.PowerShell
                 _cancellationTokenSource.Cancel();
             }
 
+            if (_process != null)
+            {
+                _process.Exited -= OnProcessExited;
+                try { _process.Dispose(); } catch { /* ignore */ }
+                _process = null;
+            }
+
             if (_outputReadTask != null || _errorReadTask != null)
             {
                 try
@@ -195,17 +202,13 @@ namespace WebPowerShell.Infrastructure.PowerShell
                     }
                 }
                 catch (Exception) { /* ignore */ }
+                
+                _outputReadTask = null;
+                _errorReadTask = null;
             }
 
             _cancellationTokenSource?.Dispose();
             _cancellationTokenSource = null;
-
-            if (_process != null)
-            {
-                _process.Exited -= OnProcessExited;
-                _process.Dispose();
-                _process = null;
-            }
         }
 
         private async Task ReadStreamAsync(StreamReader reader, Action<string> onDataReceived, CancellationToken cancellationToken)

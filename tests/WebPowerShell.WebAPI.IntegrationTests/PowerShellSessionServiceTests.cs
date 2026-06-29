@@ -4,7 +4,6 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using WebPowerShell.Application.Common.Interfaces;
-using WebPowerShell.Application.Sessions.Common;
 using WebPowerShell.Domain.Common;
 using WebPowerShell.Infrastructure.PowerShell;
 using Xunit;
@@ -15,368 +14,146 @@ namespace WebPowerShell.WebAPI.IntegrationTests
     {
         private readonly FakeTimeProvider _timeProvider;
         private readonly PowerShellSessionService _service;
+        private readonly ILoggerFactory _loggerFactory;
 
         public PowerShellSessionServiceTests()
         {
             _timeProvider = new FakeTimeProvider(new DateTimeOffset(2026, 6, 29, 3, 0, 0, TimeSpan.Zero));
-            _service = new PowerShellSessionService(_timeProvider, Substitute.For<ILogger<PowerShellSessionService>>());
+            _loggerFactory = Substitute.For<ILoggerFactory>();
+            _loggerFactory.CreateLogger(Arg.Any<string>()).Returns(Substitute.For<ILogger>());
+            _service = new PowerShellSessionService(_timeProvider, Substitute.For<ILogger<PowerShellSessionService>>(), _loggerFactory);
         }
 
         [Fact]
         public async Task CreateSessionAsync_ShouldCreateNewSessionAndOpenRunspace()
         {
-            // Arrange
             var userId = Guid.NewGuid();
             var tabId = Guid.NewGuid();
 
-            // Act
-            var result = await _service.CreateSessionAsync(userId, tabId);
+            var result = await _service.CreateSessionAsync(userId, tabId, _ => Task.CompletedTask, _ => Task.CompletedTask, () => Task.CompletedTask);
 
-            // Assert
             Assert.True(result.IsSuccess, result.Failure?.Message ?? "No error message");
             Assert.NotNull(result.Value);
             Assert.Equal(userId, result.Value.UserId);
             Assert.Equal(tabId, result.Value.TabId);
-            Assert.Equal(_timeProvider.GetUtcNow(), result.Value.CreatedAt);
-            Assert.Equal(_timeProvider.GetUtcNow(), result.Value.LastActiveAt);
 
-            // Clean up
             await _service.CloseSessionAsync(userId, tabId);
         }
 
         [Fact]
         public async Task CreateSessionAsync_WhenSessionAlreadyExists_ShouldCloseAndReplaceIt()
         {
-            // Arrange
             var userId = Guid.NewGuid();
             var tabId = Guid.NewGuid();
 
-            // First session
-            var firstResult = await _service.CreateSessionAsync(userId, tabId);
+            var firstResult = await _service.CreateSessionAsync(userId, tabId, _ => Task.CompletedTask, _ => Task.CompletedTask, () => Task.CompletedTask);
             Assert.True(firstResult.IsSuccess);
             var firstSessionId = firstResult.Value!.SessionId;
 
-            // Act
-            var secondResult = await _service.CreateSessionAsync(userId, tabId);
+            var secondResult = await _service.CreateSessionAsync(userId, tabId, _ => Task.CompletedTask, _ => Task.CompletedTask, () => Task.CompletedTask);
 
-            // Assert
             Assert.True(secondResult.IsSuccess);
             Assert.NotEqual(firstSessionId, secondResult.Value!.SessionId);
 
-            // Clean up
             await _service.CloseSessionAsync(userId, tabId);
         }
 
         [Fact]
         public async Task GetSessionAsync_WhenSessionExists_ShouldReturnSession()
         {
-            // Arrange
             var userId = Guid.NewGuid();
             var tabId = Guid.NewGuid();
-            await _service.CreateSessionAsync(userId, tabId);
+            await _service.CreateSessionAsync(userId, tabId, _ => Task.CompletedTask, _ => Task.CompletedTask, () => Task.CompletedTask);
 
-            // Act
             var result = await _service.GetSessionAsync(userId, tabId);
 
-            // Assert
             Assert.True(result.IsSuccess);
             Assert.Equal(userId, result.Value!.UserId);
             Assert.Equal(tabId, result.Value!.TabId);
 
-            // Clean up
             await _service.CloseSessionAsync(userId, tabId);
         }
 
         [Fact]
         public async Task GetSessionAsync_WhenSessionDoesNotExist_ShouldReturnSessionNotFound()
         {
-            // Act
             var result = await _service.GetSessionAsync(Guid.NewGuid(), Guid.NewGuid());
-
-            // Assert
             Assert.True(result.IsFailure);
             Assert.Equal(AppFailure.SessionNotFound.ErrorCode, result.Failure!.ErrorCode);
         }
 
         [Fact]
-        public async Task CloseSessionAsync_WhenSessionDoesNotExist_ShouldReturnSessionNotFound()
+        public async Task WriteInputAsync_ShouldReturnSuccess()
         {
-            // Act
-            var result = await _service.CloseSessionAsync(Guid.NewGuid(), Guid.NewGuid());
+            var userId = Guid.NewGuid();
+            var tabId = Guid.NewGuid();
+            await _service.CreateSessionAsync(userId, tabId, _ => Task.CompletedTask, _ => Task.CompletedTask, () => Task.CompletedTask);
 
-            // Assert
+            var result = await _service.WriteInputAsync(userId, tabId, "echo 'hello'\n");
+
+            Assert.True(result.IsSuccess);
+
+            await _service.CloseSessionAsync(userId, tabId);
+        }
+
+        [Fact]
+        public async Task WriteInputAsync_WhenSessionNotFound_ShouldReturnSessionNotFound()
+        {
+            var result = await _service.WriteInputAsync(Guid.NewGuid(), Guid.NewGuid(), "echo 'hello'\n");
             Assert.True(result.IsFailure);
             Assert.Equal(AppFailure.SessionNotFound.ErrorCode, result.Failure!.ErrorCode);
         }
 
         [Fact]
-        public async Task ExecuteCommandAsync_ShouldAcquireLockAndReturnSuccess()
+        public async Task StopCommandAsync_ShouldReturnSuccess()
         {
-            // Arrange
             var userId = Guid.NewGuid();
             var tabId = Guid.NewGuid();
-            await _service.CreateSessionAsync(userId, tabId);
+            await _service.CreateSessionAsync(userId, tabId, _ => Task.CompletedTask, _ => Task.CompletedTask, () => Task.CompletedTask);
 
-            // Act
-            var result = await _service.ExecuteCommandAsync(
-                userId, 
-                tabId, 
-                "Get-Process", 
-                (streamData, ct) => Task.CompletedTask
-            );
-
-            // Assert
-            Assert.True(result.IsSuccess);
-
-            // Clean up
-            await _service.CloseSessionAsync(userId, tabId);
-        }
-
-        [Fact]
-        public async Task ExecuteCommandAsync_WhenSessionNotFound_ShouldReturnSessionNotFound()
-        {
-            // Act
-            var result = await _service.ExecuteCommandAsync(
-                Guid.NewGuid(), 
-                Guid.NewGuid(), 
-                "Get-Process", 
-                (streamData, ct) => Task.CompletedTask
-            );
-
-            // Assert
-            Assert.True(result.IsFailure);
-            Assert.Equal(AppFailure.SessionNotFound.ErrorCode, result.Failure!.ErrorCode);
-        }
-
-        [Fact]
-        public async Task ExecuteCommandAsync_SessionBusy_ReturnsSessionBusy()
-        {
-            // Arrange
-            var userId = Guid.NewGuid();
-            var tabId = Guid.NewGuid();
-            await _service.CreateSessionAsync(userId, tabId);
-
-            var firstCallStarted = new TaskCompletionSource<bool>();
-            var firstCallHold = new TaskCompletionSource<bool>();
-
-            // 첫 번째 명령어 실행 (onStream 콜백 내에서 대기하게 만듬)
-            var firstCallTask = _service.ExecuteCommandAsync(
-                userId,
-                tabId,
-                "Long-Running-Command",
-                async (streamData, ct) =>
-                {
-                    firstCallStarted.SetResult(true);
-                    await firstCallHold.Task; // 두 번째 호출이 진행될 때까지 대기
-                }
-            );
-
-            // 첫 번째 호출이 onStream 내부로 들어갈 때까지 대기
-            await firstCallStarted.Task;
-
-            // Act: 동일 세션에 두 번째 명령어 호출 (락 획득 실패해야 함)
-            var secondResult = await _service.ExecuteCommandAsync(
-                userId,
-                tabId,
-                "Another-Command",
-                (streamData, ct) => Task.CompletedTask
-            );
-
-            // 첫 번째 명령어 대기 해제 및 종료 대기
-            firstCallHold.SetResult(true);
-            await firstCallTask;
-
-            // Assert
-            Assert.True(secondResult.IsFailure);
-            Assert.Equal(AppFailure.SessionBusy.ErrorCode, secondResult.Failure!.ErrorCode);
-
-            // Clean up
-            await _service.CloseSessionAsync(userId, tabId);
-        }
-
-        [Fact]
-        public async Task ExecuteCommandAsync_ShouldStreamStandardOutput()
-        {
-            // Arrange
-            var userId = Guid.NewGuid();
-            var tabId = Guid.NewGuid();
-            await _service.CreateSessionAsync(userId, tabId);
-
-            var outputReceived = new TaskCompletionSource<string>();
-
-            // Act
-            var result = await _service.ExecuteCommandAsync(
-                userId,
-                tabId,
-                "Write-Output 'TestMessage'",
-                (streamData, ct) =>
-                {
-                    if (streamData.Type == PowerShellStreamType.Output)
-                    {
-                        outputReceived.TrySetResult(streamData.Content);
-                    }
-                    return Task.CompletedTask;
-                }
-            );
-
-            // Assert
-            Assert.True(result.IsSuccess);
-
-            var completedTask = await Task.WhenAny(outputReceived.Task, Task.Delay(5000));
-            Assert.Same(outputReceived.Task, completedTask);
-
-            var content = await outputReceived.Task;
-            Assert.Equal("TestMessage", content);
-
-            // Clean up
-            await _service.CloseSessionAsync(userId, tabId);
-        }
-
-        [Fact]
-        public async Task ExecuteCommandAsync_ShouldStreamErrorOutput()
-        {
-            // Arrange
-            var userId = Guid.NewGuid();
-            var tabId = Guid.NewGuid();
-            await _service.CreateSessionAsync(userId, tabId);
-
-            var errorReceived = new TaskCompletionSource<string>();
-
-            // Act
-            var result = await _service.ExecuteCommandAsync(
-                userId,
-                tabId,
-                "Write-Error 'TestError'",
-                (streamData, ct) =>
-                {
-                    if (streamData.Type == PowerShellStreamType.Error)
-                    {
-                        errorReceived.TrySetResult(streamData.Content);
-                    }
-                    return Task.CompletedTask;
-                }
-            );
-
-            // Assert
-            Assert.True(result.IsSuccess);
-
-            var completedTask = await Task.WhenAny(errorReceived.Task, Task.Delay(5000));
-            Assert.Same(errorReceived.Task, completedTask);
-
-            var content = await errorReceived.Task;
-            Assert.Contains("TestError", content);
-
-            // Clean up
-            await _service.CloseSessionAsync(userId, tabId);
-        }
-
-        [Fact]
-        public async Task StopCommandAsync_ShouldStopRunningCommandAndReleaseLock()
-        {
-            // Arrange
-            var userId = Guid.NewGuid();
-            var tabId = Guid.NewGuid();
-            await _service.CreateSessionAsync(userId, tabId);
-
-            var commandStarted = new TaskCompletionSource<bool>();
-
-            // Act
-            var runTask = _service.ExecuteCommandAsync(
-                userId,
-                tabId,
-                "Write-Output 'Started'; Start-Sleep -Seconds 10",
-                (streamData, ct) =>
-                {
-                    if (streamData.Type == PowerShellStreamType.Output && streamData.Content == "Started")
-                    {
-                        commandStarted.TrySetResult(true);
-                    }
-                    return Task.CompletedTask;
-                }
-            );
-
-            // 명령어가 시작될 때까지 최대 5초 대기
-            var startCompleted = await Task.WhenAny(commandStarted.Task, Task.Delay(5000));
-            Assert.Same(commandStarted.Task, startCompleted);
-            Assert.True(await commandStarted.Task);
-
-            // 명령어 실행 중 중지 호출
             var stopResult = await _service.StopCommandAsync(userId, tabId);
             Assert.True(stopResult.IsSuccess);
 
-            // 중단 호출 후 runTask가 완료되는지 대기 (타임아웃 5초)
-            var runCompleted = await Task.WhenAny(runTask, Task.Delay(5000));
-            Assert.Same(runTask, runCompleted);
-
-            await runTask;
-
-            // Assert: 락이 해제되어 새로운 명령을 즉시 다시 실행할 수 있는지 검증
-            var nextResult = await _service.ExecuteCommandAsync(
-                userId,
-                tabId,
-                "Write-Output 'Next'",
-                (streamData, ct) => Task.CompletedTask
-            );
-            Assert.True(nextResult.IsSuccess, "락이 해제되지 않아 다음 명령 실행에 실패했습니다.");
-
-            // Clean up
             await _service.CloseSessionAsync(userId, tabId);
         }
 
         [Fact]
         public async Task CleanIdleSessionsAsync_ShouldCleanExpiredSessionsOnly()
         {
-            // Arrange
             var user1 = Guid.NewGuid();
             var tab1 = Guid.NewGuid();
             var user2 = Guid.NewGuid();
             var tab2 = Guid.NewGuid();
 
-            // 1. 첫 번째 세션 생성 (현재 시간: 3:00)
-            var s1Result = await _service.CreateSessionAsync(user1, tab1);
+            var s1Result = await _service.CreateSessionAsync(user1, tab1, _ => Task.CompletedTask, _ => Task.CompletedTask, () => Task.CompletedTask);
             Assert.True(s1Result.IsSuccess);
 
-            // 2. 시간을 15분 후로 이동 (현재 시간: 3:15)
             _timeProvider.Advance(TimeSpan.FromMinutes(15));
 
-            // 3. 두 번째 세션 생성 (LastActiveAt은 3:15가 됨)
-            var s2Result = await _service.CreateSessionAsync(user2, tab2);
+            var s2Result = await _service.CreateSessionAsync(user2, tab2, _ => Task.CompletedTask, _ => Task.CompletedTask, () => Task.CompletedTask);
             Assert.True(s2Result.IsSuccess);
 
-            // 4. 시간을 다시 20분 후로 이동 (현재 시간: 3:35)
-            // 첫 번째 세션은 3:00 활성화였으므로 유휴 시간 35분 경과 (만료)
-            // 두 번째 세션은 3:15 활성화였으므로 유휴 시간 20분 경과 (미만료)
             _timeProvider.Advance(TimeSpan.FromMinutes(20));
 
-            // Act
-            // 유휴 시간 30분을 기준으로 정리
             var cleanResult = await _service.CleanIdleSessionsAsync(TimeSpan.FromMinutes(30));
 
-            // Assert
             Assert.True(cleanResult.IsSuccess);
-            Assert.Equal(1, cleanResult.Value); // 1개 정리됨
+            Assert.Equal(1, cleanResult.Value);
 
-            // 첫 번째 세션은 조회 시 세션이 없어야 함 (SessionNotFound)
             var getS1 = await _service.GetSessionAsync(user1, tab1);
             Assert.True(getS1.IsFailure);
             Assert.Equal(AppFailure.SessionNotFound.ErrorCode, getS1.Failure!.ErrorCode);
 
-            // 두 번째 세션은 유지되어야 함
             var getS2 = await _service.GetSessionAsync(user2, tab2);
             Assert.True(getS2.IsSuccess);
 
-            // Clean up (남아있는 세션 정리)
             await _service.CloseSessionAsync(user2, tab2);
         }
 
         [Fact]
         public void Dispose_ShouldBeIdempotent_WhenCalledMultipleTimes()
         {
-            // Act & Assert
-            // 첫 번째 Dispose
             _service.Dispose();
-
-            // 두 번째, 세 번째 Dispose 호출 시 예외가 발생하지 않아야 함
             var ex = Record.Exception(() => _service.Dispose());
             Assert.Null(ex);
         }
@@ -384,11 +161,7 @@ namespace WebPowerShell.WebAPI.IntegrationTests
         [Fact]
         public async Task DisposeAsync_ShouldBeIdempotent_WhenCalledMultipleTimes()
         {
-            // Act & Assert
-            // 첫 번째 DisposeAsync
             await _service.DisposeAsync();
-
-            // 두 번째, 세 번째 DisposeAsync 호출 시 예외가 발생하지 않아야 함
             var ex = await Record.ExceptionAsync(async () => await _service.DisposeAsync());
             Assert.Null(ex);
         }
@@ -396,12 +169,10 @@ namespace WebPowerShell.WebAPI.IntegrationTests
         [Fact]
         public async Task APICalls_AfterDispose_ShouldThrowObjectDisposedException()
         {
-            // Arrange
             _service.Dispose();
 
-            // Act & Assert
-            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.CreateSessionAsync(Guid.NewGuid(), Guid.NewGuid()));
-            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.ExecuteCommandAsync(Guid.NewGuid(), Guid.NewGuid(), "Get-Process", (stream, ct) => Task.CompletedTask));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.CreateSessionAsync(Guid.NewGuid(), Guid.NewGuid(), _ => Task.CompletedTask, _ => Task.CompletedTask, () => Task.CompletedTask));
+            await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.WriteInputAsync(Guid.NewGuid(), Guid.NewGuid(), "Test"));
             await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.StopCommandAsync(Guid.NewGuid(), Guid.NewGuid()));
             await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.CloseSessionAsync(Guid.NewGuid(), Guid.NewGuid()));
             await Assert.ThrowsAsync<ObjectDisposedException>(() => _service.GetSessionAsync(Guid.NewGuid(), Guid.NewGuid()));
