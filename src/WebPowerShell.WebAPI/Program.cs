@@ -39,6 +39,7 @@ builder.Services.AddSingleton<IShellCommand, EchoCommand>();
 builder.Services.AddSingleton<IShellCommand, PwdCommand>();
 builder.Services.AddSingleton<IShellCommand, CdCommand>();
 builder.Services.AddSingleton<IShellCommand, DirCommand>();
+builder.Services.AddSingleton<IShellCommand, LsCommand>();
 builder.Services.AddSingleton<IShellCommand, MkdirCommand>();
 builder.Services.AddSingleton<IShellCommand, RmCommand>();
 builder.Services.AddSingleton<IShellCommand, CpCommand>();
@@ -221,6 +222,7 @@ using (var scope = app.Services.CreateScope())
             PasswordHash = hasher.HashPassword("Password123!"),
             LastPasswordChangeDate = DateTimeOffset.UtcNow,
             IsActive = true,
+            IsAdmin = true,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         });

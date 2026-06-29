@@ -45,6 +45,18 @@ public class CommandsTests : IDisposable
     }
 
     [Fact]
+    public async Task LsCommand_ListsFiles()
+    {
+        var homeDir = Path.Combine(_baseDir, "home", _username);
+        File.WriteAllText(Path.Combine(homeDir, "test.txt"), "hello");
+        
+        var cmd = new LsCommand();
+        await cmd.ExecuteAsync(new string[0], _context);
+        
+        Assert.Contains("test.txt", _context.Outputs);
+    }
+
+    [Fact]
     public async Task MkdirCommand_CreatesDirectory()
     {
         var cmd = new MkdirCommand();
