@@ -157,7 +157,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             var openResult = await connectionA.InvokeAsync<HubResponse>("OpenTab", tabId);
             Assert.True(openResult.Success);
 
-            var sendResult = await connectionB.InvokeAsync<HubResponse>("SendCommand", tabId, "Get-Process");
+            var sendResult = await connectionB.InvokeAsync<HubResponse>("SendCommand", tabId, "Get-Process\n");
             Assert.False(sendResult.Success);
             Assert.Equal("SessionNotFound", sendResult.ErrorCode);
 
@@ -183,7 +183,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             var openResult = await connectionA.InvokeAsync<HubResponse>("OpenTab", tabId);
             Assert.True(openResult.Success);
 
-            var sendResult = await connectionA.InvokeAsync<HubResponse>("SendCommand", tabId, "Write-Output 'Hello'");
+            var sendResult = await connectionA.InvokeAsync<HubResponse>("SendCommand", tabId, "Write-Output 'Hello'\n");
             Assert.True(sendResult.Success);
 
             var stopResult = await connectionA.InvokeAsync<HubResponse>("StopCommand", tabId);
@@ -301,7 +301,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             var openResult = await connection.InvokeAsync<HubResponse>("OpenTab", tabId);
             Assert.True(openResult.Success);
 
-            var sendResult = await connection.InvokeAsync<HubResponse>("SendCommand", tabId, "echo 'StreamingHello'");
+            var sendResult = await connection.InvokeAsync<HubResponse>("SendCommand", tabId, "echo 'StreamingHello'\n");
             Assert.True(sendResult.Success);
 
             var outputData = await outputTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -333,7 +333,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             var openResult = await connection.InvokeAsync<HubResponse>("OpenTab", tabId);
             Assert.True(openResult.Success);
 
-            var sendResult = await connection.InvokeAsync<HubResponse>("SendCommand", tabId, "[Console]::Error.WriteLine('StreamingError')");
+            var sendResult = await connection.InvokeAsync<HubResponse>("SendCommand", tabId, "[Console]::Error.WriteLine('StreamingError')\n");
             Assert.True(sendResult.Success);
 
             var errorData = await errorTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));

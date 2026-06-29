@@ -109,10 +109,6 @@ public class TerminalHub : Hub
         // PtyProcess에 직접 명령 문자열(또는 개별 키 입력)을 전달
         // 기존 프론트엔드가 완성된 커맨드를 보내는 방식이라면 \n을 추가해서 보냄
         string inputToWrite = command;
-        if (!inputToWrite.EndsWith("\n") && !inputToWrite.EndsWith("\r"))
-        {
-            inputToWrite += "\n";
-        }
 
         var result = await _sessionService.WriteInputAsync(userId, tabId, inputToWrite, Context.ConnectionAborted);
 
