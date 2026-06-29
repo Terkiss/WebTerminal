@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using WebPowerShell.Application.Common.Interfaces;
+using WebPowerShell.Application.Common.Models;
 using WebPowerShell.Domain.Common;
 
 namespace WebPowerShell.WebAPI.Hubs;
@@ -12,13 +13,13 @@ namespace WebPowerShell.WebAPI.Hubs;
 public class TerminalHub : Hub
 {
     private readonly ILogger<TerminalHub> _logger;
-    private readonly IPowerShellSessionService _sessionService;
+    private readonly ITeruTeruEngine _engine;
     private readonly IHubContext<TerminalHub> _hubContext;
 
-    public TerminalHub(ILogger<TerminalHub> logger, IPowerShellSessionService sessionService, IHubContext<TerminalHub> hubContext)
+    public TerminalHub(ILogger<TerminalHub> logger, ITeruTeruEngine engine, IHubContext<TerminalHub> hubContext)
     {
         _logger = logger;
-        _sessionService = sessionService;
+        _engine = engine;
         _hubContext = hubContext;
     }
 
@@ -48,7 +49,7 @@ public class TerminalHub : Hub
         if (TryGetUserId(out var userId))
         {
             // Do not use Context.ConnectionAborted since the connection is already disconnected/aborted
-            var result = await _sessionService.CloseAllSessionsForUserAsync(userId, CancellationToken.None);
+            var result = await _engine.CloseAllSessionsForUserAsync(userId, CancellationToken.None);
             if (result.IsSuccess)
             {
                 _logger.LogInformation("Closed {Count} sessions for user {UserId} upon disconnect.", result.Value, userId);
@@ -71,18 +72,13 @@ public class TerminalHub : Hub
 
         var connectionId = Context.ConnectionId;
 
-        var result = await _sessionService.CreateSessionAsync(
+        var result = await _engine.CreateSessionAsync(
             userId, 
             tabId,
-            onOutput: async (output) => 
+            onOutput: async (payload) => 
             {
-                try { await _hubContext.Clients.Client(connectionId).SendAsync("ReceiveOutput", tabId, output); }
+                try { await _hubContext.Clients.Client(connectionId).SendAsync("ReceiveOutput", tabId, payload); }
                 catch (Exception ex) { _logger.LogWarning(ex, "Failed to send ReceiveOutput"); }
-            },
-            onError: async (error) => 
-            {
-                try { await _hubContext.Clients.Client(connectionId).SendAsync("ReceiveError", tabId, error); }
-                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send ReceiveError"); }
             },
             onExited: async () => 
             {
@@ -106,11 +102,11 @@ public class TerminalHub : Hub
             return HubResponse.Fail(AppFailure.Unauthorized);
         }
 
-        // PtyProcess에 직접 명령 문자열(또는 개별 키 입력)을 전달
-        // 기존 프론트엔드가 완성된 커맨드를 보내는 방식이라면 \n을 추가해서 보냄
+        // PTY 방식처럼 실시간 키 입력이 아니라,
+        // TeruTeruShell은 완성된 명령어를 전달받아 실행합니다.
         string inputToWrite = command;
 
-        var result = await _sessionService.WriteInputAsync(userId, tabId, inputToWrite, Context.ConnectionAborted);
+        var result = await _engine.ExecuteCommandAsync(userId, tabId, inputToWrite, Context.ConnectionAborted);
 
         if (!result.IsSuccess)
         {
@@ -130,7 +126,7 @@ public class TerminalHub : Hub
             return HubResponse.Fail(AppFailure.Unauthorized);
         }
 
-        var result = await _sessionService.StopCommandAsync(userId, tabId, Context.ConnectionAborted);
+        var result = await _engine.StopCommandAsync(userId, tabId, Context.ConnectionAborted);
         if (!result.IsSuccess)
         {
             return HubResponse.Fail(result.Failure!);
@@ -146,7 +142,7 @@ public class TerminalHub : Hub
             return HubResponse.Fail(AppFailure.Unauthorized);
         }
 
-        var result = await _sessionService.CloseSessionAsync(userId, tabId, Context.ConnectionAborted);
+        var result = await _engine.CloseSessionAsync(userId, tabId, Context.ConnectionAborted);
         if (!result.IsSuccess)
         {
             return HubResponse.Fail(result.Failure!);

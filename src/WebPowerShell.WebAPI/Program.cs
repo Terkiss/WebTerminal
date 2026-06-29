@@ -14,7 +14,8 @@ using WebPowerShell.Domain.Common;
 using WebPowerShell.Infrastructure.Persistence;
 using WebPowerShell.Infrastructure.Persistence.Repositories;
 using WebPowerShell.Infrastructure.Security;
-using WebPowerShell.Infrastructure.PowerShell;
+using WebPowerShell.Infrastructure.TeruTeruShell;
+using WebPowerShell.Infrastructure.TeruTeruShell.Commands;
 using WebPowerShell.WebAPI.Hubs;
 using WebPowerShell.WebAPI.Middleware;
 
@@ -33,8 +34,8 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<IPowerShellSessionService, PowerShellSessionService>();
-builder.Services.AddHostedService<SessionCleanupWorker>();
+builder.Services.AddSingleton<ITeruTeruEngine, TeruTeruEngine>();
+builder.Services.AddSingleton<IShellCommand, EchoCommand>();
 
 // Handlers
 builder.Services.AddScoped<LoginCommandHandler>();

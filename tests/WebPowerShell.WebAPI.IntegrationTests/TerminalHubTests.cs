@@ -14,6 +14,7 @@ using NSubstitute;
 using WebPowerShell.Application.Common.Interfaces;
 using WebPowerShell.Application.Users.Commands.Login;
 using WebPowerShell.Domain.Common;
+using WebPowerShell.Application.Common.Models;
 using WebPowerShell.Domain.Entities;
 using WebPowerShell.Infrastructure.Security;
 using WebPowerShell.WebAPI.Hubs;
@@ -198,17 +199,17 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
     [Fact]
     public async Task Scenario5_HubUnhandledException_ShouldReturnInternalError()
     {
-        var mockedService = Substitute.For<IPowerShellSessionService>();
+        var mockedService = Substitute.For<ITeruTeruEngine>();
         mockedService
-            .CreateSessionAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<Func<string, Task>>(), Arg.Any<Func<string, Task>>(), Arg.Any<Func<Task>>(), Arg.Any<CancellationToken>())
+            .CreateSessionAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<Func<ShellOutputPayload, Task>>(), Arg.Any<Func<Task>>(), Arg.Any<CancellationToken>())
             .Returns<Task<Result<PowerShellSession>>>(x => throw new InvalidOperationException("Simulated unhandled exception"));
 
         using var factory = _factory.WithWebHostBuilder(builder =>
         {
             builder.ConfigureTestServices(services =>
             {
-                services.RemoveAll<IPowerShellSessionService>();
-                services.AddSingleton<IPowerShellSessionService>(mockedService);
+                services.RemoveAll<ITeruTeruEngine>();
+                services.AddSingleton<ITeruTeruEngine>(mockedService);
             });
         });
 
@@ -288,12 +289,12 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
         var tabId = Guid.NewGuid();
         var connection = await CreateAuthenticatedConnectionAsync("streamuser1", "CorrectPassword123!");
 
-        var outputTcs = new TaskCompletionSource<(Guid tabId, string content)>();
+        var outputTcs = new TaskCompletionSource<(Guid tabId, ShellOutputPayload payload)>();
 
-        connection.On<Guid, string>("ReceiveOutput", (id, content) =>
+        connection.On<Guid, ShellOutputPayload>("ReceiveOutput", (id, payload) =>
         {
-            if (content.Contains("StreamingHello"))
-                outputTcs.TrySetResult((id, content));
+            if (payload.Text.Contains("StreamingHello"))
+                outputTcs.TrySetResult((id, payload));
         });
 
         try
@@ -306,7 +307,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
 
             var outputData = await outputTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal(tabId, outputData.tabId);
-            Assert.Contains("StreamingHello", outputData.content);
+            Assert.Contains("StreamingHello", outputData.payload.Text);
         }
         finally
         {
@@ -314,35 +315,4 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
         }
     }
 
-    [Fact]
-    public async Task Scenario7_StreamingErrorRouting_ShouldSucceed()
-    {
-        var tabId = Guid.NewGuid();
-        var connection = await CreateAuthenticatedConnectionAsync("streamuser2", "CorrectPassword123!");
-
-        var errorTcs = new TaskCompletionSource<(Guid tabId, string content)>();
-
-        connection.On<Guid, string>("ReceiveError", (id, content) =>
-        {
-            if (content.Contains("StreamingError"))
-                errorTcs.TrySetResult((id, content));
-        });
-
-        try
-        {
-            var openResult = await connection.InvokeAsync<HubResponse>("OpenTab", tabId);
-            Assert.True(openResult.Success);
-
-            var sendResult = await connection.InvokeAsync<HubResponse>("SendCommand", tabId, "[Console]::Error.WriteLine('StreamingError')\n");
-            Assert.True(sendResult.Success);
-
-            var errorData = await errorTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            Assert.Equal(tabId, errorData.tabId);
-            Assert.Contains("StreamingError", errorData.content);
-        }
-        finally
-        {
-            await connection.StopAsync();
-        }
-    }
 }
