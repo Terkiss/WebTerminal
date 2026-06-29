@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using WebPowerShell.Application.Common.Interfaces;
 using WebPowerShell.Application.Common.Models;
@@ -26,6 +27,7 @@ public class TeruTeruEngine : ITeruTeruEngine
         public DateTimeOffset LastActiveAt { get; set; } = DateTimeOffset.UtcNow;
         public CancellationToken CancellationToken => _executionCts.Token;
         public SemaphoreSlim ExecutionLock => _executionLock;
+        public IVirtualFileSystem FileSystem { get; }
 
         public void CancelCurrentCommand()
         {
@@ -51,13 +53,14 @@ public class TeruTeruEngine : ITeruTeruEngine
             _executionLock.Dispose();
         }
 
-        public SessionContext(Guid userId, Guid tabId, Func<ShellOutputPayload, Task> onOutput, Func<Task> onExited)
+        public SessionContext(Guid userId, Guid tabId, Func<ShellOutputPayload, Task> onOutput, Func<Task> onExited, IVirtualFileSystem fileSystem)
         {
             SessionId = Guid.NewGuid();
             UserId = userId;
             TabId = tabId;
             OnOutput = onOutput;
             OnExited = onExited;
+            FileSystem = fileSystem;
         }
 
         public async Task WriteOutputAsync(ShellOutputPayload payload)
@@ -87,10 +90,12 @@ public class TeruTeruEngine : ITeruTeruEngine
     private readonly ShellParser _parser;
     private readonly ConcurrentDictionary<string, SessionContext> _sessions = new();
     private readonly Dictionary<string, IShellCommand> _commands = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IServiceProvider _serviceProvider;
 
-    public TeruTeruEngine(ILogger<TeruTeruEngine> logger, IEnumerable<IShellCommand> commands)
+    public TeruTeruEngine(ILogger<TeruTeruEngine> logger, IEnumerable<IShellCommand> commands, IServiceProvider serviceProvider)
     {
         _logger = logger;
+        _serviceProvider = serviceProvider;
         _parser = new ShellParser();
         foreach (var cmd in commands)
         {
@@ -104,7 +109,19 @@ public class TeruTeruEngine : ITeruTeruEngine
     {
         var key = GetSessionKey(userId, tabId);
         
-        var context = new SessionContext(userId, tabId, onOutput, onExited);
+        using var scope = _serviceProvider.CreateScope();
+        var userRepository = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+        var userResult = await userRepository.GetByIdAsync(userId, cancellationToken);
+        if (!userResult.IsSuccess)
+        {
+            return Result<PowerShellSession>.Fail(AppFailure.Unauthorized);
+        }
+
+        var user = userResult.Value!;
+        bool isAdmin = user.IsAdmin;
+        var fileSystem = new VirtualFileSystem(isAdmin, user.Username);
+
+        var context = new SessionContext(userId, tabId, onOutput, onExited, fileSystem);
         _sessions[key] = context;
 
         var session = new PowerShellSession

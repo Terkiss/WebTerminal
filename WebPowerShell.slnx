@@ -7,6 +7,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/WebPowerShell.Application.UnitTests/WebPowerShell.Application.UnitTests.csproj" />
+    <Project Path="tests/WebPowerShell.Infrastructure.UnitTests/WebPowerShell.Infrastructure.UnitTests.csproj" />
     <Project Path="tests/WebPowerShell.WebAPI.IntegrationTests/WebPowerShell.WebAPI.IntegrationTests.csproj" />
   </Folder>
 </Solution>

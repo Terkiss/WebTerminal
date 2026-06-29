@@ -13,5 +13,6 @@ namespace WebPowerShell.Domain.Entities
         public DateTimeOffset UpdatedAt { get; set; }
         public int FailedLoginCount { get; set; }
         public DateTimeOffset? LockedUntil { get; set; }
+        public bool IsAdmin { get; set; }
     }
 }

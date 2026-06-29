@@ -36,6 +36,8 @@ builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ITeruTeruEngine, TeruTeruEngine>();
 builder.Services.AddSingleton<IShellCommand, EchoCommand>();
+builder.Services.AddSingleton<IShellCommand, PwdCommand>();
+builder.Services.AddSingleton<IShellCommand, CdCommand>();
 
 // Handlers
 builder.Services.AddScoped<LoginCommandHandler>();

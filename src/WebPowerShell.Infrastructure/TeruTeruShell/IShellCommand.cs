@@ -11,6 +11,7 @@ public interface ICommandContext
     Task WriteErrorAsync(string text);
     Task WriteSystemAsync(string text);
     CancellationToken CancellationToken { get; }
+    IVirtualFileSystem FileSystem { get; }
 }
 
 public interface IShellCommand
