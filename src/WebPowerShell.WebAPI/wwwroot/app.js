@@ -49,8 +49,9 @@ function showToast(message, type = 'info', duration = 3000) {
     
     toast.innerHTML = `
         <span class="toast-icon"><i class="fa-solid ${icon}"></i></span>
-        <span class="toast-content">${message}</span>
+        <span class="toast-content"></span>
     `;
+    toast.querySelector('.toast-content').textContent = message;
     
     container.appendChild(toast);
     
@@ -112,65 +113,55 @@ function initSignalR() {
         .build();
         
     // Listeners
-    state.connection.on("ReceiveOutput", (tabId, content) => {
+    state.connection.on("ReceiveOutput", (tabId, packetJson) => {
         const tab = state.tabs.get(tabId);
-        if (tab && content) {
-            // Echo Filter: if backend echoes exactly the command we just sent, skip it
-            if (tab.lastSentCommand) {
-                // Safely remove the echo from the beginning without messing up string length due to CRLF
-                const escapedCmd = tab.lastSentCommand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Escape regex
-                // Match the command followed optionally by any combination of \r and \n
-                const regex = new RegExp('^' + escapedCmd.replace(/\r?\n/g, '\\r?\\n') + '\\r?\\n?');
-                
-                if (regex.test(content)) {
-                    content = content.replace(regex, '');
-                    tab.lastSentCommand = null;
-                } else if (tab.lastSentCommand.replace(/\r?\n/g, '').trim() === content.replace(/\r?\n/g, '').trim()) {
-                    // Exact match ignoring newlines
-                    tab.lastSentCommand = null;
-                    return;
-                } else if (tab.lastSentCommand.startsWith(content.replace(/\r?\n/g, '\n'))) {
-                    // It's a partial echo chunk, consume it
-                    tab.lastSentCommand = tab.lastSentCommand.substring(content.length);
-                    return;
+        if (tab && packetJson) {
+            let packet = packetJson;
+            if (typeof packetJson === 'string') {
+                try {
+                    packet = JSON.parse(packetJson);
+                } catch (e) {
+                    packet = { type: 'standard', text: packetJson };
                 }
             }
             
+            let text = String(packet.text || '');
             // Format standard outputs to terminal. Replace lone newlines with CRLF but prevent double \r\r\n
-            let formatted = content.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
-            tab.terminal.write(formatted);
-        }
-    });
-    
-    state.connection.on("ReceiveError", (tabId, content) => {
-        const tab = state.tabs.get(tabId);
-        if (tab && content) {
-            const formatted = content.replace(/\r?\n/g, '\r\n');
-            tab.terminal.write(`\x1b[1;31m${formatted}\x1b[0m`);
-        }
-    });
-    
-    state.connection.on("ReceiveWarning", (tabId, content) => {
-        const tab = state.tabs.get(tabId);
-        if (tab && content) {
-            const formatted = content.replace(/\r?\n/g, '\r\n');
-            tab.terminal.write(`\x1b[1;33m${formatted}\x1b[0m`);
-        }
-    });
-    
-    state.connection.on("ReceiveVerbose", (tabId, content) => {
-        const tab = state.tabs.get(tabId);
-        if (tab && content) {
-            const formatted = content.replace(/\r?\n/g, '\r\n');
-            tab.terminal.write(`\x1b[1;36m${formatted}\x1b[0m`);
-        }
-    });
-    
-    state.connection.on("ReceiveDebug", (tabId, content) => {
-        const tab = state.tabs.get(tabId);
-        if (tab && content) {
-            const formatted = content.replace(/\r?\n/g, '\r\n');
-            tab.terminal.write(`\x1b[1;30m${formatted}\x1b[0m`);
+            let formatted = text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+            
+            let prefix = '';
+            let suffix = '\x1b[0m'; // Reset
+            
+            if (packet.color) {
+                const colorMap = {
+                    black: '\x1b[1;30m',
+                    red: '\x1b[1;31m',
+                    green: '\x1b[1;32m',
+                    yellow: '\x1b[1;33m',
+                    blue: '\x1b[1;34m',
+                    magenta: '\x1b[1;35m',
+                    cyan: '\x1b[1;36m',
+                    white: '\x1b[1;37m',
+                    gray: '\x1b[1;90m'
+                };
+                prefix = colorMap[String(packet.color).toLowerCase()] || '';
+            } else if (packet.type) {
+                switch (String(packet.type).toLowerCase()) {
+                    case 'error': prefix = '\x1b[1;31m'; break;
+                    case 'warning': prefix = '\x1b[1;33m'; break;
+                    case 'verbose': prefix = '\x1b[1;36m'; break;
+                    case 'debug': prefix = '\x1b[1;90m'; break;
+                    case 'success': prefix = '\x1b[1;32m'; break;
+                    case 'prompt': prefix = '\x1b[1;32m'; break;
+                    default: prefix = ''; break;
+                }
+            }
+            
+            if (prefix) {
+                tab.terminal.write(`${prefix}${formatted}${suffix}`);
+            } else {
+                tab.terminal.write(formatted);
+            }
         }
     });
     
@@ -425,16 +416,11 @@ class Tab {
                         if (this.history.length === 0 || this.history[this.history.length - 1] !== cmd) {
                             this.history.push(cmd);
                         }
-                        this.lastSentCommand = cmd + '\r\n'; // Used for backend echo filtering
                         
-                        // Clear filter after 1000ms just in case it swallowed things
-                        if(this.echoTimeout) clearTimeout(this.echoTimeout);
-                        this.echoTimeout = setTimeout(() => { this.lastSentCommand = null; }, 1000);
-                        
-                        await executeCommand(this.id, cmd + '\r\n');
+                        await executeCommand(this.id, cmd);
                     } else {
-                        // For empty enter, just send newline to backend to trigger natural prompt
-                        await executeCommand(this.id, '\r\n');
+                        // For empty enter, just send empty string to trigger natural prompt
+                        await executeCommand(this.id, '');
                     }
                     break;
                     
