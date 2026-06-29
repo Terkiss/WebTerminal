@@ -1,25 +1,66 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
 namespace WebPowerShell.Infrastructure.PowerShell
 {
-    public class PtyProcessWrapper : IDisposable
+    public class PtyProcessWrapper : IDisposable, IAsyncDisposable
     {
         private readonly ILogger<PtyProcessWrapper> _logger;
+        private readonly string _fileName;
+        private readonly string _arguments;
         private Process? _process;
         private bool _disposed;
+        private CancellationTokenSource? _cancellationTokenSource;
+        private Task? _outputReadTask;
+        private Task? _errorReadTask;
 
         public event EventHandler? ProcessExited;
+        public event EventHandler<string>? OutputDataReceived;
+        public event EventHandler<string>? ErrorDataReceived;
 
         public StreamWriter StandardInput => _process?.StandardInput ?? throw new InvalidOperationException("Process is not running.");
         public StreamReader StandardOutput => _process?.StandardOutput ?? throw new InvalidOperationException("Process is not running.");
         public StreamReader StandardError => _process?.StandardError ?? throw new InvalidOperationException("Process is not running.");
 
-        public PtyProcessWrapper(ILogger<PtyProcessWrapper> logger)
+        public async Task WriteInputAsync(string input, CancellationToken cancellationToken = default)
+        {
+            if (_process == null || _process.HasExited) throw new InvalidOperationException("Process is not running.");
+            try
+            {
+                await _process.StandardInput.WriteAsync(input.AsMemory(), cancellationToken);
+                await _process.StandardInput.FlushAsync(cancellationToken);
+            }
+            catch (IOException ex)
+            {
+                _logger.LogWarning(ex, "IOException while writing to process standard input (pipe may be broken).");
+            }
+        }
+
+        public async Task WriteControlCharacterAsync(char controlChar, CancellationToken cancellationToken = default)
+        {
+            if (_process == null || _process.HasExited) throw new InvalidOperationException("Process is not running.");
+            try
+            {
+                await _process.StandardInput.WriteAsync(controlChar.ToString().AsMemory(), cancellationToken);
+                await _process.StandardInput.FlushAsync(cancellationToken);
+            }
+            catch (IOException ex)
+            {
+                _logger.LogWarning(ex, "IOException while writing control character to process standard input.");
+            }
+        }
+
+        public PtyProcessWrapper(ILogger<PtyProcessWrapper> logger, string fileName = "powershell.exe", string arguments = "")
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _fileName = string.IsNullOrWhiteSpace(fileName) ? "powershell.exe" : fileName;
+            _arguments = arguments ?? "";
         }
 
         public void Start()
@@ -29,12 +70,15 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
             var startInfo = new ProcessStartInfo
             {
-                FileName = "powershell.exe",
+                FileName = _fileName,
+                Arguments = _arguments,
                 UseShellExecute = false,
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
             };
 
             _process = new Process
@@ -52,17 +96,21 @@ namespace WebPowerShell.Infrastructure.PowerShell
                     throw new InvalidOperationException("Failed to start powershell.exe process.");
                 }
                 
-                _logger.LogInformation("Started powershell.exe with PID: {ProcessId}", _process.Id);
+                _cancellationTokenSource = new CancellationTokenSource();
+                _outputReadTask = Task.Run(() => ReadStreamAsync(_process.StandardOutput, data => OutputDataReceived?.Invoke(this, data), _cancellationTokenSource.Token));
+                _errorReadTask = Task.Run(() => ReadStreamAsync(_process.StandardError, data => ErrorDataReceived?.Invoke(this, data), _cancellationTokenSource.Token));
+
+                _logger.LogInformation("Started {FileName} with PID: {ProcessId}", _fileName, _process.Id);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Exception occurred while starting powershell.exe.");
-                CleanupProcess();
+                _logger.LogError(ex, "Exception occurred while starting {FileName}.", _fileName);
+                CleanupProcessAsync().GetAwaiter().GetResult();
                 throw;
             }
         }
 
-        public void Stop()
+        public async Task StopAsync()
         {
             if (_disposed) throw new ObjectDisposedException(nameof(PtyProcessWrapper));
 
@@ -70,21 +118,36 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
             try
             {
+                _cancellationTokenSource?.Cancel();
+
                 if (!_process.HasExited)
                 {
                     _process.Kill();
-                    _process.WaitForExit(3000); // Wait up to 3 seconds for exit
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                    try
+                    {
+                        await _process.WaitForExitAsync(cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _logger.LogWarning("Process did not exit within 3 seconds after Kill.");
+                    }
                 }
-                _logger.LogInformation("Stopped powershell.exe process.");
+                _logger.LogInformation("Stopped {FileName} process.", _fileName);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error while stopping powershell.exe process.");
+                _logger.LogError(ex, "Error while stopping {FileName} process.", _fileName);
             }
             finally
             {
-                CleanupProcess();
+                await CleanupProcessAsync();
             }
+        }
+
+        public void Stop()
+        {
+            StopAsync().GetAwaiter().GetResult();
         }
 
         private void OnProcessExited(object? sender, EventArgs e)
@@ -96,28 +159,77 @@ namespace WebPowerShell.Infrastructure.PowerShell
                     var exitCode = _process.ExitCode;
                     if (exitCode != 0)
                     {
-                        _logger.LogWarning("powershell.exe process exited abnormally with code {ExitCode}.", exitCode);
+                        _logger.LogWarning("{FileName} process exited abnormally with code {ExitCode}.", _fileName, exitCode);
                     }
                     else
                     {
-                        _logger.LogInformation("powershell.exe process exited normally.");
+                        _logger.LogInformation("{FileName} process exited normally.", _fileName);
                     }
                 }
                 catch (Exception ex)
                 {
-                     _logger.LogWarning(ex, "Could not retrieve exit code for powershell.exe.");
+                     _logger.LogWarning(ex, "Could not retrieve exit code for {FileName}.", _fileName);
                 }
             }
             ProcessExited?.Invoke(this, EventArgs.Empty);
+
+            // Clean up resources asynchronously when the process exits by itself
+            _ = CleanupProcessAsync();
         }
 
-        private void CleanupProcess()
+        private async Task CleanupProcessAsync()
         {
+            if (_cancellationTokenSource != null && !_cancellationTokenSource.IsCancellationRequested)
+            {
+                _cancellationTokenSource.Cancel();
+            }
+
+            if (_outputReadTask != null || _errorReadTask != null)
+            {
+                try
+                {
+                    var tasks = new[] { _outputReadTask, _errorReadTask }.Where(t => t != null).ToArray();
+                    if (tasks.Length > 0)
+                    {
+                        await Task.WhenAny(Task.WhenAll(tasks!), Task.Delay(1000));
+                    }
+                }
+                catch (Exception) { /* ignore */ }
+            }
+
+            _cancellationTokenSource?.Dispose();
+            _cancellationTokenSource = null;
+
             if (_process != null)
             {
                 _process.Exited -= OnProcessExited;
                 _process.Dispose();
                 _process = null;
+            }
+        }
+
+        private async Task ReadStreamAsync(StreamReader reader, Action<string> onDataReceived, CancellationToken cancellationToken)
+        {
+            var buffer = new char[4096];
+            try
+            {
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    var readCount = await reader.ReadAsync(buffer, cancellationToken);
+                    if (readCount == 0)
+                        break;
+
+                    var data = new string(buffer, 0, readCount);
+                    onDataReceived(data);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected when cancelling
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error reading from process stream.");
             }
         }
 
@@ -143,6 +255,23 @@ namespace WebPowerShell.Infrastructure.PowerShell
         public void Dispose()
         {
             Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed) return;
+            
+            try
+            {
+                await StopAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Exception ignored during DisposeAsync.");
+            }
+            
+            _disposed = true;
             GC.SuppressFinalize(this);
         }
     }
