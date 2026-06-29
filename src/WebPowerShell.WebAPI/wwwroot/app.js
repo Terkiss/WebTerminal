@@ -115,8 +115,29 @@ function initSignalR() {
     state.connection.on("ReceiveOutput", (tabId, content) => {
         const tab = state.tabs.get(tabId);
         if (tab && content) {
-            // Format standard outputs to terminal. Replace lone newlines with CRLF
-            const formatted = content.replace(/\r?\n/g, '\r\n');
+            // Echo Filter: if backend echoes exactly the command we just sent, skip it
+            if (tab.lastSentCommand) {
+                // Safely remove the echo from the beginning without messing up string length due to CRLF
+                const escapedCmd = tab.lastSentCommand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Escape regex
+                // Match the command followed optionally by any combination of \r and \n
+                const regex = new RegExp('^' + escapedCmd.replace(/\r?\n/g, '\\r?\\n') + '\\r?\\n?');
+                
+                if (regex.test(content)) {
+                    content = content.replace(regex, '');
+                    tab.lastSentCommand = null;
+                } else if (tab.lastSentCommand.replace(/\r?\n/g, '').trim() === content.replace(/\r?\n/g, '').trim()) {
+                    // Exact match ignoring newlines
+                    tab.lastSentCommand = null;
+                    return;
+                } else if (tab.lastSentCommand.startsWith(content.replace(/\r?\n/g, '\n'))) {
+                    // It's a partial echo chunk, consume it
+                    tab.lastSentCommand = tab.lastSentCommand.substring(content.length);
+                    return;
+                }
+            }
+            
+            // Format standard outputs to terminal. Replace lone newlines with CRLF but prevent double \r\r\n
+            let formatted = content.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
             tab.terminal.write(formatted);
         }
     });
@@ -168,8 +189,6 @@ function initSignalR() {
         const tab = state.tabs.get(tabId);
         if (tab) {
             tab.isRunning = false;
-            tab.currentDirectory = currentDirectory || 'C:\\';
-            tab.terminal.write(`\r\nPS ${tab.currentDirectory}> `);
             if (state.activeTabId === tabId) {
                 document.getElementById('executionProgressBar').classList.remove('active');
                 document.getElementById('btnStopCommand').disabled = true;
@@ -406,9 +425,16 @@ class Tab {
                         if (this.history.length === 0 || this.history[this.history.length - 1] !== cmd) {
                             this.history.push(cmd);
                         }
-                        await executeCommand(this.id, cmd);
+                        this.lastSentCommand = cmd + '\r\n'; // Used for backend echo filtering
+                        
+                        // Clear filter after 1000ms just in case it swallowed things
+                        if(this.echoTimeout) clearTimeout(this.echoTimeout);
+                        this.echoTimeout = setTimeout(() => { this.lastSentCommand = null; }, 1000);
+                        
+                        await executeCommand(this.id, cmd + '\r\n');
                     } else {
-                        this.terminal.write(`PS ${this.currentDirectory}> `);
+                        // For empty enter, just send newline to backend to trigger natural prompt
+                        await executeCommand(this.id, '\r\n');
                     }
                     break;
                     
@@ -432,7 +458,8 @@ class Tab {
                     this.commandBuffer = '';
                     this.cursorOffset = 0;
                     this.historyIndex = -1;
-                    this.terminal.write(`^C\r\nPS ${this.currentDirectory}> `);
+                    this.terminal.write(`^C\r\n`);
+                    await executeCommand(this.id, '\x03');
                     break;
                     
                 default:
@@ -479,7 +506,7 @@ class Tab {
             // Open and initialize xterm ONLY when it is active (visible in DOM)
             if (!this.isOpened) {
                 this.terminal.open(this.domElement);
-                this.terminal.write(`WebPowerShell Premium Console\r\n\r\nPS ${this.currentDirectory}> `);
+                this.terminal.write(`WebPowerShell Premium Console\r\n\r\n`);
                 this.isOpened = true;
             }
             
@@ -641,7 +668,6 @@ function clearActiveTerminal() {
     const tab = state.tabs.get(state.activeTabId);
     if (tab && tab.terminal) {
         tab.terminal.clear();
-        tab.terminal.write(`PS ${tab.currentDirectory}> `);
         tab.commandBuffer = '';
     }
 }
