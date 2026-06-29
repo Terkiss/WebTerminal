@@ -38,6 +38,12 @@ builder.Services.AddSingleton<ITeruTeruEngine, TeruTeruEngine>();
 builder.Services.AddSingleton<IShellCommand, EchoCommand>();
 builder.Services.AddSingleton<IShellCommand, PwdCommand>();
 builder.Services.AddSingleton<IShellCommand, CdCommand>();
+builder.Services.AddSingleton<IShellCommand, DirCommand>();
+builder.Services.AddSingleton<IShellCommand, MkdirCommand>();
+builder.Services.AddSingleton<IShellCommand, RmCommand>();
+builder.Services.AddSingleton<IShellCommand, CpCommand>();
+builder.Services.AddSingleton<IShellCommand, PingCommand>();
+builder.Services.AddSingleton<IShellCommand, AgyCommand>();
 
 // Handlers
 builder.Services.AddScoped<LoginCommandHandler>();
