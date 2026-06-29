@@ -33,16 +33,30 @@ public class TerminalHub : Hub
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        var userId = Context.UserIdentifier ?? "unknown";
+        var userIdString = Context.UserIdentifier ?? "unknown";
         var connectionId = Context.ConnectionId;
 
         if (exception != null)
         {
-            _logger.LogWarning(exception, "User {UserId} disconnected with connection ID {ConnectionId} due to an error", userId, connectionId);
+            _logger.LogWarning(exception, "User {UserId} disconnected with connection ID {ConnectionId} due to an error", userIdString, connectionId);
         }
         else
         {
-            _logger.LogInformation("User {UserId} disconnected with connection ID {ConnectionId}", userId, connectionId);
+            _logger.LogInformation("User {UserId} disconnected with connection ID {ConnectionId}", userIdString, connectionId);
+        }
+
+        if (TryGetUserId(out var userId))
+        {
+            // Do not use Context.ConnectionAborted since the connection is already disconnected/aborted
+            var result = await _sessionService.CloseAllSessionsForUserAsync(userId, CancellationToken.None);
+            if (result.IsSuccess)
+            {
+                _logger.LogInformation("Closed {Count} sessions for user {UserId} upon disconnect.", result.Value, userId);
+            }
+            else
+            {
+                _logger.LogWarning("Failed to close sessions for user {UserId} upon disconnect: {FailureMessage}", userId, result.Failure?.Message);
+            }
         }
 
         await base.OnDisconnectedAsync(exception);

@@ -15,7 +15,8 @@ namespace WebPowerShell.Infrastructure.PowerShell
         private readonly string _fileName;
         private readonly string _arguments;
         private Process? _process;
-        private bool _disposed;
+        private int _isDisposed;
+        private readonly object _syncRoot = new();
         private CancellationTokenSource? _cancellationTokenSource;
         private Task? _outputReadTask;
         private Task? _errorReadTask;
@@ -65,8 +66,11 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         public void Start()
         {
-            if (_disposed) throw new ObjectDisposedException(nameof(PtyProcessWrapper));
-            if (_process != null) throw new InvalidOperationException("Process is already running.");
+            if (Interlocked.CompareExchange(ref _isDisposed, 0, 0) == 1) throw new ObjectDisposedException(nameof(PtyProcessWrapper));
+            lock (_syncRoot)
+            {
+                if (_process != null) throw new InvalidOperationException("Process is already running.");
+            }
 
             var startInfo = new ProcessStartInfo
             {
@@ -112,21 +116,33 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         public async Task StopAsync()
         {
-            if (_disposed) throw new ObjectDisposedException(nameof(PtyProcessWrapper));
+            if (Interlocked.CompareExchange(ref _isDisposed, 0, 0) == 1) throw new ObjectDisposedException(nameof(PtyProcessWrapper));
 
-            if (_process == null) return;
+            Process? localProcess;
+            lock (_syncRoot)
+            {
+                localProcess = _process;
+            }
+
+            if (localProcess == null) return;
 
             try
             {
                 _cancellationTokenSource?.Cancel();
 
-                if (!_process.HasExited)
+                if (!localProcess.HasExited)
                 {
-                    _process.Kill(true);
+                    try
+                    {
+                        localProcess.Kill(true);
+                    }
+                    catch (InvalidOperationException) { /* Process already exited */ }
+                    catch (System.ComponentModel.Win32Exception) { /* Process already exited */ }
+                    
                     using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
                     try
                     {
-                        await _process.WaitForExitAsync(cts.Token);
+                        await localProcess.WaitForExitAsync(cts.Token);
                     }
                     catch (OperationCanceledException)
                     {
@@ -147,16 +163,27 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         public void Stop()
         {
-            StopAsync().GetAwaiter().GetResult();
+            // Fire-and-forget to avoid Sync-over-Async blocking (P1 fix)
+            _ = Task.Run(async () => 
+            {
+                try { await StopAsync(); }
+                catch (Exception ex) { _logger.LogWarning(ex, "Error during fire-and-forget StopAsync."); }
+            });
         }
 
         private void OnProcessExited(object? sender, EventArgs e)
         {
-            if (_process != null)
+            Process? localProcess;
+            lock (_syncRoot)
+            {
+                localProcess = _process;
+            }
+
+            if (localProcess != null)
             {
                 try 
                 {
-                    var exitCode = _process.ExitCode;
+                    var exitCode = localProcess.ExitCode;
                     if (exitCode != 0)
                     {
                         _logger.LogWarning("{FileName} process exited abnormally with code {ExitCode}.", _fileName, exitCode);
@@ -184,11 +211,17 @@ namespace WebPowerShell.Infrastructure.PowerShell
                 _cancellationTokenSource.Cancel();
             }
 
-            if (_process != null)
+            Process? localProcess;
+            lock (_syncRoot)
             {
-                _process.Exited -= OnProcessExited;
-                try { _process.Dispose(); } catch { /* ignore */ }
+                localProcess = _process;
                 _process = null;
+            }
+
+            if (localProcess != null)
+            {
+                localProcess.Exited -= OnProcessExited;
+                try { localProcess.Dispose(); } catch { /* ignore */ }
             }
 
             if (_outputReadTask != null || _errorReadTask != null)
@@ -238,7 +271,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         protected virtual void Dispose(bool disposing)
         {
-            if (_disposed) return;
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 1) return;
             
             if (disposing)
             {
@@ -251,8 +284,6 @@ namespace WebPowerShell.Infrastructure.PowerShell
                     _logger.LogWarning(ex, "Exception ignored during dispose.");
                 }
             }
-            
-            _disposed = true;
         }
 
         public void Dispose()
@@ -263,7 +294,7 @@ namespace WebPowerShell.Infrastructure.PowerShell
 
         public async ValueTask DisposeAsync()
         {
-            if (_disposed) return;
+            if (Interlocked.Exchange(ref _isDisposed, 1) == 1) return;
             
             try
             {
@@ -274,7 +305,6 @@ namespace WebPowerShell.Infrastructure.PowerShell
                 _logger.LogWarning(ex, "Exception ignored during DisposeAsync.");
             }
             
-            _disposed = true;
             GC.SuppressFinalize(this);
         }
     }

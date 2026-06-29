@@ -14,5 +14,6 @@ namespace WebPowerShell.Application.Common.Interfaces
         Task<Result<bool>> CloseSessionAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default);
         Task<Result<PowerShellSession>> GetSessionAsync(Guid userId, Guid tabId, CancellationToken cancellationToken = default);
         Task<Result<int>> CleanIdleSessionsAsync(TimeSpan idleTimeout, CancellationToken cancellationToken = default);
+        Task<Result<int>> CloseAllSessionsForUserAsync(Guid userId, CancellationToken cancellationToken = default);
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -155,6 +156,27 @@ namespace WebPowerShell.Infrastructure.PowerShell
             }
 
             return Task.FromResult(Result<PowerShellSession>.Success(entry.SessionMetadata));
+        }
+
+        public async Task<Result<int>> CloseAllSessionsForUserAsync(Guid userId, CancellationToken cancellationToken = default)
+        {
+            ThrowIfDisposed();
+            int closedCount = 0;
+            
+            var keysToRemove = _sessions.Keys.Where(k => k.UserId == userId).ToList();
+
+            foreach (var key in keysToRemove)
+            {
+                if (cancellationToken.IsCancellationRequested) break;
+                
+                if (_sessions.TryRemove(key, out var entry))
+                {
+                    await ReleaseSessionEntryAsync(entry, cancellationToken);
+                    closedCount++;
+                }
+            }
+
+            return Result<int>.Success(closedCount);
         }
 
         public async Task<Result<int>> CleanIdleSessionsAsync(TimeSpan idleTimeout, CancellationToken cancellationToken = default)
