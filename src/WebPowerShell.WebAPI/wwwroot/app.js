@@ -125,14 +125,24 @@ function initSignalR() {
                 }
             }
             
-            let text = String(packet.text || '');
+            let text = String(packet.text || packet.Text || '');
+            let type = String(packet.type || packet.Type || '').toLowerCase();
+            let color = String(packet.color || packet.Color || '').toLowerCase();
+            
+            // Handle Clear Command Payload
+            if (type === 'system' && text.trim() === 'CLEAR') {
+                tab.terminal.clear();
+                tab.commandBuffer = '';
+                return;
+            }
+            
             // Format standard outputs to terminal. Replace lone newlines with CRLF but prevent double \r\r\n
             let formatted = text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
             
             let prefix = '';
             let suffix = '\x1b[0m'; // Reset
             
-            if (packet.color) {
+            if (color) {
                 const colorMap = {
                     black: '\x1b[1;30m',
                     red: '\x1b[1;31m',
@@ -144,9 +154,9 @@ function initSignalR() {
                     white: '\x1b[1;37m',
                     gray: '\x1b[1;90m'
                 };
-                prefix = colorMap[String(packet.color).toLowerCase()] || '';
-            } else if (packet.type) {
-                switch (String(packet.type).toLowerCase()) {
+                prefix = colorMap[color] || '';
+            } else if (type) {
+                switch (type) {
                     case 'error': prefix = '\x1b[1;31m'; break;
                     case 'warning': prefix = '\x1b[1;33m'; break;
                     case 'verbose': prefix = '\x1b[1;36m'; break;
