@@ -190,6 +190,14 @@ public class TeruTeruEngine : ITeruTeruEngine
                 {
                     await context.WriteOutputAsync(new ShellOutputPayload { Type = "system", Text = "CLEAR" });
                 }
+                else if (parsed.CommandName.Length == 2 && parsed.CommandName[1] == ':' && char.IsLetter(parsed.CommandName[0]))
+                {
+                    if (_commands.TryGetValue("cd", out var cdCmd))
+                    {
+                        // Append a backslash to ensure it resolves to the drive root, e.g. "D:\"
+                        await cdCmd.ExecuteAsync(new[] { parsed.CommandName + "\\" }, context);
+                    }
+                }
                 else
                 {
                     await context.WriteErrorAsync($"Command not found: {parsed.CommandName}");
