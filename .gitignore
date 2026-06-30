@@ -44,7 +44,6 @@ reference/
 PtyTest/
 *.md
 !README.md
-!.agents/
 *.txt
 test_*.ps1
 test_*.cs
