@@ -35,3 +35,17 @@ bld/
 .agents/**/tmp/
 .agents/**/*.log
 .agents/**/TestResults/
+
+# Project Documents & Agent Scripts (Exclude from Git)
+Documents/
+docs/
+agents/
+reference/
+PtyTest/
+*.md
+!README.md
+!.agents/
+*.txt
+test_*.ps1
+test_*.cs
+pty_dump.cs
