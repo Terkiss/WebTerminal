@@ -48,11 +48,11 @@ public class TerminalHub : Hub
     {
         if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        // Profile Selection could be dynamic. Default to pwsh for now.
+        // Launch cmd.exe with UTF-8 codepage so xterm.js renders CJK characters correctly
         var options = new TerminalLaunchOptions(
             Executable: "cmd.exe",
-            Arguments: "",
-            WorkingDirectory: Environment.CurrentDirectory,
+            Arguments: "/k chcp 65001 >nul",
+            WorkingDirectory: Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             Environment: null,
             Columns: 80,
             Rows: 24
