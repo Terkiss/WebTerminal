@@ -215,8 +215,8 @@ using (var scope = app.Services.CreateScope())
         context.Users.Add(new WebPowerShell.Domain.Entities.User
         {
             Id = Guid.NewGuid(),
-            Username = "operator01",
-            PasswordHash = hasher.HashPassword("Password123!"),
+            Username = "terukiss",
+            PasswordHash = hasher.HashPassword("dbslwms@skshgk1"),
             LastPasswordChangeDate = DateTimeOffset.UtcNow,
             IsActive = true,
             IsAdmin = true,
