@@ -11,6 +11,12 @@ public class AgyCommand : IShellCommand
 
     public async Task ExecuteAsync(string[] args, ICommandContext context)
     {
+        if (args.Length == 0)
+        {
+            await context.WriteErrorAsync("agy: Interactive mode is not supported in TeruTeruShell. Please provide specific arguments (e.g. 'agy --help').");
+            return;
+        }
+
         Process? process = null;
         try
         {
