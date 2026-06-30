@@ -159,7 +159,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             var openResult = await connectionA.InvokeAsync<HubResponse>("CreateSession", tabId);
             Assert.True(openResult.Success, $"CreateSession failed: {openResult.ErrorCode}");
 
-            var sendResult = await connectionB.InvokeAsync<HubResponse>("SendInput", tabId, new byte[] { 65 });
+            var sendResult = await connectionB.InvokeAsync<HubResponse>("SendInput", tabId, Convert.ToBase64String(new byte[] { 65 }));
             Assert.False(sendResult.Success);
             Assert.Equal("Unauthorized", sendResult.ErrorCode);
 
@@ -185,7 +185,7 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             var openResult = await connectionA.InvokeAsync<HubResponse>("CreateSession", tabId);
             Assert.True(openResult.Success, $"CreateSession failed: {openResult.ErrorCode}");
 
-            var sendResult = await connectionA.InvokeAsync<HubResponse>("SendInput", tabId, new byte[] { 65 });
+            var sendResult = await connectionA.InvokeAsync<HubResponse>("SendInput", tabId, Convert.ToBase64String(new byte[] { 65 }));
             Assert.True(sendResult.Success);
 
             var closeResult = await connectionA.InvokeAsync<HubResponse>("CloseSession", tabId);

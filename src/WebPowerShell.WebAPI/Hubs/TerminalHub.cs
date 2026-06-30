@@ -107,9 +107,20 @@ public class TerminalHub : Hub
         return HubResponse.Ok();
     }
 
-    public async Task<HubResponse> SendInput(Guid tabId, byte[] input)
+    public async Task<HubResponse> SendInput(Guid tabId, string inputBase64)
     {
         if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
+
+        byte[] input;
+        try
+        {
+            input = Convert.FromBase64String(inputBase64);
+        }
+        catch (FormatException)
+        {
+            _logger.LogWarning("SendInput: invalid base64 from client");
+            return HubResponse.Fail(new AppFailure("InvalidInput", "Input must be a valid base64 string."));
+        }
 
         var result = _sessionManager.GetSession(tabId);
         if (!result.IsSuccess) return HubResponse.Fail(result.Failure!);

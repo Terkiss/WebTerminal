@@ -288,7 +288,9 @@ class Tab {
         
         // Handle User Input directly piped to PTY
         this.terminal.onData(async (data) => {
+            console.log('[DEBUG] onData fired:', JSON.stringify(data), 'connection state:', state.connection?.state);
             if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
+                console.warn('[DEBUG] onData: connection not ready, dropping input');
                 return;
             }
             try {
@@ -302,9 +304,11 @@ class Tab {
                 }
                 const base64 = window.btoa(binary);
                 
-                await state.connection.invoke("SendInput", this.id, base64);
+                console.log('[DEBUG] Sending SendInput:', this.id, 'base64:', base64, 'raw bytes:', Array.from(payload));
+                const result = await state.connection.invoke("SendInput", this.id, base64);
+                console.log('[DEBUG] SendInput result:', result);
             } catch (e) {
-                console.error("Failed to send input", e);
+                console.error("[DEBUG] Failed to send input:", e);
             }
         });
         
@@ -395,8 +399,8 @@ async function createNewTab() {
     
     try {
         const response = await state.connection.invoke("CreateSession", id);
-        if (response && response.isSuccess === false) {
-            showToast(`Failed to open session: ${response.failure?.message || 'Unknown error'}`, 'error');
+        if (response && response.success === false) {
+            showToast(`Failed to open session: ${response.errorMessage || 'Unknown error'}`, 'error');
             newTab.cleanup();
             state.tabs.delete(id);
             return;
