@@ -740,7 +740,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (adminBtn && adminModal) {
         adminBtn.addEventListener('click', () => {
-            adminModal.classList.remove('hidden');
+            adminModal.classList.add('active');
             document.getElementById('createAuthError').classList.add('hidden');
             document.getElementById('createAuthSuccess').classList.add('hidden');
             if(createUserForm) createUserForm.reset();
@@ -772,7 +772,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (response.ok) {
                     successMsg.classList.remove('hidden');
                     createUserForm.reset();
-                    setTimeout(() => adminModal.classList.add('hidden'), 2000);
+                    setTimeout(() => adminModal.classList.remove('active'), 2000);
                 } else {
                     let errMsg = 'Failed to create user.';
                     try {

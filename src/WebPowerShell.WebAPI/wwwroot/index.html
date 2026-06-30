@@ -70,6 +70,10 @@
                 </div>
                 
                 <div class="footer-actions">
+                    <button id="adminBtn" class="btn-action" title="User Management" style="display: none;">
+                        <i class="fa-solid fa-users-gear"></i>
+                        <span>Users</span>
+                    </button>
                     <button id="btnOpenChangePassword" class="btn-action" title="Change Password">
                         <i class="fa-solid fa-key"></i>
                         <span>Security</span>
@@ -206,6 +210,55 @@
                     <button type="button" id="btnCancelChangePassword" class="btn-cancel">Cancel</button>
                     <button type="submit" id="btnChangePasswordSubmit" class="btn-submit">
                         <span>Change Password</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ADMIN MODAL -->
+    <div id="adminModal" class="overlay">
+        <div class="glass-card change-password-card">
+            <div class="card-header">
+                <div class="modal-icon"><i class="fa-solid fa-users-gear"></i></div>
+                <h2>Create User</h2>
+                <p>Register a new user account for WebPowerShell.</p>
+            </div>
+            
+            <form id="createUserForm" class="auth-form">
+                <div class="form-group">
+                    <label for="newUsername">Username</label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-user"></i>
+                        <input type="text" id="newUsername" placeholder="Enter username" required autocomplete="off">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="newUserPassword">Password</label>
+                    <div class="input-wrapper">
+                        <i class="fa-solid fa-lock"></i>
+                        <input type="password" id="newUserPassword" placeholder="Minimum 8 characters" required autocomplete="new-password">
+                    </div>
+                </div>
+                <div class="form-group" style="flex-direction: row; align-items: center; justify-content: flex-start; gap: 10px;">
+                    <label for="newUserIsAdmin" style="margin-bottom: 0;">Administrator Role</label>
+                    <input type="checkbox" id="newUserIsAdmin" style="width: auto; height: auto;" />
+                </div>
+                
+                <div id="createAuthError" class="auth-error-message hidden">
+                    <i class="fa-solid fa-triangle-exclamation"></i>
+                    <span>Failed to create user.</span>
+                </div>
+
+                <div id="createAuthSuccess" class="auth-error-message hidden" style="background: rgba(74, 222, 128, 0.1); border-color: rgba(74, 222, 128, 0.3); color: #4ade80;">
+                    <i class="fa-solid fa-circle-check"></i>
+                    <span>User created successfully!</span>
+                </div>
+                
+                <div class="modal-actions">
+                    <button type="button" class="btn-cancel" onclick="document.getElementById('adminModal').classList.remove('active')">Cancel</button>
+                    <button type="submit" class="btn-submit">
+                        <span>Create</span>
                     </button>
                 </div>
             </form>
