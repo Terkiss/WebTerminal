@@ -502,7 +502,6 @@ class Tab {
             // Open and initialize xterm ONLY when it is active (visible in DOM)
             if (!this.isOpened) {
                 this.terminal.open(this.domElement);
-                this.terminal.write(`WebPowerShell Premium Console\r\n\r\n`);
                 this.isOpened = true;
             }
             
@@ -545,20 +544,25 @@ async function createNewTab() {
     const id = generateUUID();
     const name = `Session ${state.tabs.size + 1}`;
     
+    // Instantiate and register tab before sending SignalR request to prevent output drops
+    const newTab = new Tab(id, name);
+    state.tabs.set(id, newTab);
+    newTab.initializeDOM();
+    
     try {
         const response = await state.connection.invoke("OpenTab", id);
         if (response && response.isSuccess === false) {
             showToast(`Failed to open session: ${response.failure?.message || 'Unknown error'}`, 'error');
+            newTab.cleanup();
+            state.tabs.delete(id);
             return;
         }
-        
-        const newTab = new Tab(id, name);
-        state.tabs.set(id, newTab);
-        newTab.initializeDOM();
         
         switchTab(id);
     } catch (e) {
         showToast(`Failed to instantiate terminal session: ${e.message || e}`, 'error', 7000);
+        newTab.cleanup();
+        state.tabs.delete(id);
         console.error(e);
     }
 }
