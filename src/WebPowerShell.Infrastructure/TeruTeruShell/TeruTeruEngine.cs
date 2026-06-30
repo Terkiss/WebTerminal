@@ -173,7 +173,7 @@ public class TeruTeruEngine : ITeruTeruEngine
                 return Result<bool>.Success(true);
             }
 
-            await context.WriteSystemAsync($"$ {command}");
+
 
             try
             {
