@@ -125,9 +125,17 @@ function initSignalR() {
                 }
             }
             
-            let text = String(packet.text || packet.Text || '');
-            let type = String(packet.type || packet.Type || '').toLowerCase();
-            let color = String(packet.color || packet.Color || '').toLowerCase();
+            let text = packet.text || packet.Text || '';
+            if (text === null || text === undefined) text = '';
+            text = String(text);
+            
+            let type = packet.type || packet.Type || '';
+            if (type === null || type === undefined) type = '';
+            type = String(type).toLowerCase();
+            
+            let color = packet.color || packet.Color || '';
+            if (color === null || color === undefined) color = '';
+            color = String(color).toLowerCase();
             
             // Handle Clear Command Payload
             if (type === 'system' && text.trim() === 'CLEAR') {
@@ -549,6 +557,9 @@ async function createNewTab() {
     state.tabs.set(id, newTab);
     newTab.initializeDOM();
     
+    // Switch to the tab immediately so that terminal.open() is executed BEFORE backend sends output
+    switchTab(id);
+    
     try {
         const response = await state.connection.invoke("OpenTab", id);
         if (response && response.isSuccess === false) {
@@ -557,8 +568,6 @@ async function createNewTab() {
             state.tabs.delete(id);
             return;
         }
-        
-        switchTab(id);
     } catch (e) {
         showToast(`Failed to instantiate terminal session: ${e.message || e}`, 'error', 7000);
         newTab.cleanup();
