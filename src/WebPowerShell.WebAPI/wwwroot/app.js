@@ -295,8 +295,14 @@ class Tab {
                 // Encode string to UTF-8 Uint8Array for binary transmission
                 const payload = this.encoder.encode(data);
                 
-                // Convert to array of numbers for SignalR JSON transmission of byte[]
-                await state.connection.invoke("SendInput", this.id, payload);
+                // SignalR JSON protocol expects base64 string for byte[]
+                let binary = '';
+                for (let i = 0; i < payload.length; i++) {
+                    binary += String.fromCharCode(payload[i]);
+                }
+                const base64 = window.btoa(binary);
+                
+                await state.connection.invoke("SendInput", this.id, base64);
             } catch (e) {
                 console.error("Failed to send input", e);
             }
@@ -474,9 +480,8 @@ async function abortExecution(tabId) {
     
     try {
         if (state.connection && state.connection.state === signalR.HubConnectionState.Connected) {
-            // Send Ctrl+C sequence directly to PTY
-            const payload = new Uint8Array([3]); // 0x03 is Ctrl+C
-            await state.connection.invoke("SendInput", tabId, payload);
+            // 0x03 is Ctrl+C. Base64 of [3] is "Aw=="
+            await state.connection.invoke("SendInput", tabId, "Aw==");
         }
     } catch (e) {
         showToast('Failed to cancel command.', 'error');
