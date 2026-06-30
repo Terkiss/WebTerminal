@@ -113,97 +113,33 @@ function initSignalR() {
         .build();
         
     // Listeners
-    state.connection.on("ReceiveOutput", (tabId, packetJson) => {
+    state.connection.on("TerminalOutput", (tabId, chunk) => {
         const tab = state.tabs.get(tabId);
-        if (tab && packetJson) {
-            let packet = packetJson;
-            if (typeof packetJson === 'string') {
-                try {
-                    packet = JSON.parse(packetJson);
-                } catch (e) {
-                    packet = { type: 'standard', text: packetJson };
+        if (tab && chunk) {
+            // SignalR provides 'chunk' as a Uint8Array or base64 string
+            let data = chunk;
+            if (typeof chunk === 'string') {
+                // if it comes as base64 for some reason
+                const binary_string = window.atob(chunk);
+                const len = binary_string.length;
+                data = new Uint8Array(len);
+                for (let i = 0; i < len; i++) {
+                    data[i] = binary_string.charCodeAt(i);
                 }
             }
-            
-            let text = packet.text || packet.Text || '';
-            if (text === null || text === undefined) text = '';
-            text = String(text);
-            
-            let type = packet.type || packet.Type || '';
-            if (type === null || type === undefined) type = '';
-            type = String(type).toLowerCase();
-            
-            let color = packet.color || packet.Color || '';
-            if (color === null || color === undefined) color = '';
-            color = String(color).toLowerCase();
-            
-            // Handle Clear Command Payload
-            if (type === 'system' && text.trim() === 'CLEAR') {
-                tab.terminal.clear();
-                tab.commandBuffer = '';
-                return;
-            }
-            
-            // Format standard outputs to terminal. Replace lone newlines with CRLF but prevent double \r\r\n
-            let formatted = text.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
-            
-            let prefix = '';
-            let suffix = '\x1b[0m'; // Reset
-            
-            if (color) {
-                const colorMap = {
-                    black: '\x1b[1;30m',
-                    red: '\x1b[1;31m',
-                    green: '\x1b[1;32m',
-                    yellow: '\x1b[1;33m',
-                    blue: '\x1b[1;34m',
-                    magenta: '\x1b[1;35m',
-                    cyan: '\x1b[1;36m',
-                    white: '\x1b[1;37m',
-                    gray: '\x1b[1;90m'
-                };
-                prefix = colorMap[color] || '';
-            } else if (type) {
-                switch (type) {
-                    case 'error': prefix = '\x1b[1;31m'; break;
-                    case 'warning': prefix = '\x1b[1;33m'; break;
-                    case 'verbose': prefix = '\x1b[1;36m'; break;
-                    case 'debug': prefix = '\x1b[1;90m'; break;
-                    case 'success': prefix = '\x1b[1;32m'; break;
-                    case 'prompt': prefix = '\x1b[1;32m'; break;
-                    default: prefix = ''; break;
-                }
-            }
-            
-            if (prefix) {
-                tab.terminal.write(`${prefix}${formatted}${suffix}`);
-            } else {
-                tab.terminal.write(formatted);
-            }
+            tab.terminal.write(data);
         }
     });
     
-    state.connection.on("CommandStarted", (tabId) => {
+    state.connection.on("TerminalExited", (tabId, exitCode) => {
         const tab = state.tabs.get(tabId);
         if (tab) {
-            tab.isRunning = true;
-            if (state.activeTabId === tabId) {
-                document.getElementById('executionProgressBar').classList.add('active');
-                document.getElementById('btnStopCommand').disabled = false;
-            }
-        }
-    });
-    
-    state.connection.on("CommandCompleted", (tabId, isSuccess, currentDirectory) => {
-        const tab = state.tabs.get(tabId);
-        if (tab) {
+            tab.terminal.write(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\r\n`);
             tab.isRunning = false;
-            if (state.activeTabId === tabId) {
-                document.getElementById('executionProgressBar').classList.remove('active');
-                document.getElementById('btnStopCommand').disabled = true;
-            }
         }
     });
+    
+
     
     // Connection State Handling
     state.connection.onreconnecting((error) => {
@@ -268,47 +204,24 @@ function updateConnectionBadge(status, text) {
 async function syncActiveSessions() {
     for (const [tabId, tab] of state.tabs.entries()) {
         try {
-            await state.connection.invoke("OpenTab", tabId);
+            await state.connection.invoke("AttachSession", tabId);
+            tab.terminal.write("\r\n\x1b[33m[Connection Restored]\x1b[0m\r\n");
         } catch (e) {
             console.error(`Failed to sync tab ${tabId}:`, e);
         }
     }
 }
 
-// Tab Class representing an xterm.js instance
 class Tab {
     constructor(id, name) {
         this.id = id;
         this.name = name;
-        this.isRunning = false;
-        this.commandBuffer = '';
-        this.currentDirectory = 'C:\\';
-        this.history = [];
-        this.historyIndex = -1;
-        this.cursorOffset = 0; // Offset from the end of commandBuffer
+        this.isRunning = true;
         this.terminal = null;
         this.domElement = null;
         this.tabItemEl = null;
         this.isOpened = false; // flag to track if xterm open has been called
-    }
-    
-    replaceCommandLine(newContent) {
-        const oldLength = this.commandBuffer.length;
-        
-        // Move cursor to the end of the line
-        for (let i = 0; i < this.cursorOffset; i++) {
-            this.terminal.write('\x1b[C');
-        }
-        
-        // Erase the old command line
-        for (let i = 0; i < oldLength; i++) {
-            this.terminal.write('\b \b');
-        }
-        
-        // Write the new command line
-        this.commandBuffer = newContent;
-        this.cursorOffset = 0;
-        this.terminal.write(newContent);
+        this.encoder = new TextEncoder();
     }
     
     initializeDOM() {
@@ -373,117 +286,31 @@ class Tab {
             }
         });
         
-        // Handle User Input Local Echo & Buffering
+        // Handle User Input directly piped to PTY
         this.terminal.onData(async (data) => {
-            if (this.isRunning) {
-                // If running, only intercept Ctrl+C to abort execution
-                if (data === '\x03') { // Ctrl+C
-                    abortExecution(this.id);
-                }
+            if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
                 return;
             }
-            
-            // Handle arrow keys first
-            if (data === '\x1b[A') { // Up Arrow
-                if (this.history.length > 0) {
-                    if (this.historyIndex === -1) {
-                        this.historyIndex = this.history.length - 1;
-                    } else if (this.historyIndex > 0) {
-                        this.historyIndex--;
-                    }
-                    this.replaceCommandLine(this.history[this.historyIndex]);
-                }
+            try {
+                // Encode string to UTF-8 Uint8Array for binary transmission
+                const payload = this.encoder.encode(data);
+                
+                // Convert to array of numbers for SignalR JSON transmission of byte[]
+                await state.connection.invoke("SendInput", this.id, payload);
+            } catch (e) {
+                console.error("Failed to send input", e);
+            }
+        });
+        
+        // Handle Resize
+        this.terminal.onResize(async (size) => {
+            if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
                 return;
             }
-            if (data === '\x1b[B') { // Down Arrow
-                if (this.historyIndex !== -1) {
-                    if (this.historyIndex < this.history.length - 1) {
-                        this.historyIndex++;
-                        this.replaceCommandLine(this.history[this.historyIndex]);
-                    } else {
-                        this.historyIndex = -1;
-                        this.replaceCommandLine('');
-                    }
-                }
-                return;
-            }
-            if (data === '\x1b[D') { // Left Arrow
-                if (this.cursorOffset < this.commandBuffer.length) {
-                    this.cursorOffset++;
-                    this.terminal.write('\x1b[D');
-                }
-                return;
-            }
-            if (data === '\x1b[C') { // Right Arrow
-                if (this.cursorOffset > 0) {
-                    this.cursorOffset--;
-                    this.terminal.write('\x1b[C');
-                }
-                return;
-            }
-            
-            switch (data) {
-                case '\r': // Enter
-                    this.terminal.write('\r\n');
-                    const cmd = this.commandBuffer.trim();
-                    this.commandBuffer = '';
-                    this.cursorOffset = 0;
-                    this.historyIndex = -1;
-                    
-                    if (cmd) {
-                        if (this.history.length === 0 || this.history[this.history.length - 1] !== cmd) {
-                            this.history.push(cmd);
-                        }
-                        
-                        await executeCommand(this.id, cmd);
-                    } else {
-                        // For empty enter, just send empty string to trigger natural prompt
-                        await executeCommand(this.id, '');
-                    }
-                    break;
-                    
-                case '\x7f': // Backspace
-                case '\b': // Backspace
-                    if (this.commandBuffer.length > 0) {
-                        const pos = this.commandBuffer.length - this.cursorOffset;
-                        if (pos > 0) {
-                            this.commandBuffer = this.commandBuffer.slice(0, pos - 1) + this.commandBuffer.slice(pos);
-                            this.terminal.write('\b');
-                            const remaining = this.commandBuffer.slice(pos - 1);
-                            this.terminal.write(remaining + ' ');
-                            for (let i = 0; i <= remaining.length; i++) {
-                                this.terminal.write('\x1b[D');
-                            }
-                        }
-                    }
-                    break;
-                    
-                case '\x03': // Ctrl+C (when idle, clear current line)
-                    this.commandBuffer = '';
-                    this.cursorOffset = 0;
-                    this.historyIndex = -1;
-                    this.terminal.write(`^C\r\n`);
-                    await executeCommand(this.id, '\x03');
-                    break;
-                    
-                default:
-                    // Filter out other escape sequences (e.g. function keys)
-                    if (data.startsWith('\x1b') && data.length > 1) {
-                        return;
-                    }
-                    
-                    const isPrintable = data.charCodeAt(0) >= 32 || data === '\n' || data === '\t';
-                    if (isPrintable) {
-                        const pos = this.commandBuffer.length - this.cursorOffset;
-                        this.commandBuffer = this.commandBuffer.slice(0, pos) + data + this.commandBuffer.slice(pos);
-                        
-                        const remaining = this.commandBuffer.slice(pos);
-                        this.terminal.write(remaining);
-                        for (let i = 0; i < this.cursorOffset; i++) {
-                            this.terminal.write('\x1b[D');
-                        }
-                    }
-                    break;
+            try {
+                await state.connection.invoke("Resize", this.id, size.cols, size.rows);
+            } catch (e) {
+                console.error("Failed to send resize", e);
             }
         });
     }
@@ -561,7 +388,7 @@ async function createNewTab() {
     switchTab(id);
     
     try {
-        const response = await state.connection.invoke("OpenTab", id);
+        const response = await state.connection.invoke("CreateSession", id);
         if (response && response.isSuccess === false) {
             showToast(`Failed to open session: ${response.failure?.message || 'Unknown error'}`, 'error');
             newTab.cleanup();
@@ -612,7 +439,7 @@ async function closeTab(tabId) {
     
     try {
         if (state.connection && state.connection.state === signalR.HubConnectionState.Connected) {
-            await state.connection.invoke("CloseTab", tabId);
+            await state.connection.invoke("CloseSession", tabId);
         }
     } catch (e) {
         console.error(`Failed to notify backend close tab:`, e);
@@ -637,33 +464,19 @@ async function closeTab(tabId) {
 
 // Execute command on session
 async function executeCommand(tabId, command) {
-    const tab = state.tabs.get(tabId);
-    if (!tab) return;
-    
-    if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
-        tab.terminal.write(`\r\n\x1b[1;31mError: Connection is disconnected.\x1b[0m\r\nPS ${tab.currentDirectory}> `);
-        return;
-    }
-    
-    try {
-        const response = await state.connection.invoke("SendCommand", tabId, command);
-        if (response && response.isSuccess === false) {
-            tab.terminal.write(`\r\n\x1b[1;31mError: ${response.failure?.message || 'Failed to submit command'}\x1b[0m\r\nPS ${tab.currentDirectory}> `);
-        }
-    } catch (e) {
-        tab.terminal.write(`\r\n\x1b[1;31mError: ${e.message || 'Execution error'}\x1b[0m\r\nPS ${tab.currentDirectory}> `);
-    }
+    // Deprecated for raw PTY stream. Input is handled in terminal.onData
 }
 
 // Abort execution (Ctrl+C trigger)
 async function abortExecution(tabId) {
     const tab = state.tabs.get(tabId);
-    if (!tab || !tab.isRunning) return;
+    if (!tab) return;
     
     try {
         if (state.connection && state.connection.state === signalR.HubConnectionState.Connected) {
-            await state.connection.invoke("StopCommand", tabId);
-            showToast('Execution cancel requested.', 'info');
+            // Send Ctrl+C sequence directly to PTY
+            const payload = new Uint8Array([3]); // 0x03 is Ctrl+C
+            await state.connection.invoke("SendInput", tabId, payload);
         }
     } catch (e) {
         showToast('Failed to cancel command.', 'error');
@@ -677,7 +490,6 @@ function clearActiveTerminal() {
     const tab = state.tabs.get(state.activeTabId);
     if (tab && tab.terminal) {
         tab.terminal.clear();
-        tab.commandBuffer = '';
     }
 }
 
