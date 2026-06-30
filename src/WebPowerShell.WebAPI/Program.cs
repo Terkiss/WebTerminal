@@ -14,8 +14,7 @@ using WebPowerShell.Domain.Common;
 using WebPowerShell.Infrastructure.Persistence;
 using WebPowerShell.Infrastructure.Persistence.Repositories;
 using WebPowerShell.Infrastructure.Security;
-using WebPowerShell.Infrastructure.TeruTeruShell;
-using WebPowerShell.Infrastructure.TeruTeruShell.Commands;
+using WebPowerShell.Infrastructure.ConPTY;
 using WebPowerShell.WebAPI.Hubs;
 using WebPowerShell.WebAPI.Middleware;
 
@@ -34,17 +33,7 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<ITeruTeruEngine, TeruTeruEngine>();
-builder.Services.AddSingleton<IShellCommand, EchoCommand>();
-builder.Services.AddSingleton<IShellCommand, PwdCommand>();
-builder.Services.AddSingleton<IShellCommand, CdCommand>();
-builder.Services.AddSingleton<IShellCommand, DirCommand>();
-builder.Services.AddSingleton<IShellCommand, LsCommand>();
-builder.Services.AddSingleton<IShellCommand, MkdirCommand>();
-builder.Services.AddSingleton<IShellCommand, RmCommand>();
-builder.Services.AddSingleton<IShellCommand, CpCommand>();
-builder.Services.AddSingleton<IShellCommand, PingCommand>();
-builder.Services.AddSingleton<IShellCommand, AgyCommand>();
+builder.Services.AddSingleton<ITerminalSessionManager, TerminalSessionManager>();
 
 // Handlers
 builder.Services.AddScoped<LoginCommandHandler>();

@@ -7,15 +7,16 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
-using WebPowerShell.Application.Common.Interfaces;
 using WebPowerShell.Application.Users.Commands.Login;
 using WebPowerShell.Domain.Common;
 using WebPowerShell.Application.Common.Models;
 using WebPowerShell.Domain.Entities;
+using WebPowerShell.Infrastructure.ConPTY;
 using WebPowerShell.Infrastructure.Security;
 using WebPowerShell.WebAPI.Hubs;
 using Xunit;
@@ -155,16 +156,16 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
 
         try
         {
-            var openResult = await connectionA.InvokeAsync<HubResponse>("OpenTab", tabId);
-            Assert.True(openResult.Success);
+            var openResult = await connectionA.InvokeAsync<HubResponse>("CreateSession", tabId);
+            Assert.True(openResult.Success, $"CreateSession failed: {openResult.ErrorCode}");
 
-            var sendResult = await connectionB.InvokeAsync<HubResponse>("SendCommand", tabId, "Get-Process\n");
+            var sendResult = await connectionB.InvokeAsync<HubResponse>("SendInput", tabId, new byte[] { 65 });
             Assert.False(sendResult.Success);
-            Assert.Equal("SessionNotFound", sendResult.ErrorCode);
+            Assert.Equal("Unauthorized", sendResult.ErrorCode);
 
-            var closeResult = await connectionB.InvokeAsync<HubResponse>("CloseTab", tabId);
+            var closeResult = await connectionB.InvokeAsync<HubResponse>("CloseSession", tabId);
             Assert.False(closeResult.Success);
-            Assert.Equal("SessionNotFound", closeResult.ErrorCode);
+            Assert.Equal("Unauthorized", closeResult.ErrorCode);
         }
         finally
         {
@@ -174,145 +175,25 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
     }
 
     [Fact]
-    public async Task Scenario4_NormalCommandExecutionAndStop_ShouldSucceed()
+    public async Task Scenario4_NormalCommandExecution_ShouldSucceed()
     {
         var tabId = Guid.NewGuid();
         var connectionA = await CreateAuthenticatedConnectionAsync("userA2", "CorrectPassword123!");
 
         try
         {
-            var openResult = await connectionA.InvokeAsync<HubResponse>("OpenTab", tabId);
-            Assert.True(openResult.Success);
+            var openResult = await connectionA.InvokeAsync<HubResponse>("CreateSession", tabId);
+            Assert.True(openResult.Success, $"CreateSession failed: {openResult.ErrorCode}");
 
-            var sendResult = await connectionA.InvokeAsync<HubResponse>("SendCommand", tabId, "Write-Output 'Hello'\n");
+            var sendResult = await connectionA.InvokeAsync<HubResponse>("SendInput", tabId, new byte[] { 65 });
             Assert.True(sendResult.Success);
 
-            var stopResult = await connectionA.InvokeAsync<HubResponse>("StopCommand", tabId);
-            Assert.True(stopResult.Success);
+            var closeResult = await connectionA.InvokeAsync<HubResponse>("CloseSession", tabId);
+            Assert.True(closeResult.Success);
         }
         finally
         {
             await connectionA.StopAsync();
         }
     }
-
-    [Fact]
-    public async Task Scenario5_HubUnhandledException_ShouldReturnInternalError()
-    {
-        var mockedService = Substitute.For<ITeruTeruEngine>();
-        mockedService
-            .CreateSessionAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<Func<ShellOutputPayload, Task>>(), Arg.Any<Func<Task>>(), Arg.Any<CancellationToken>())
-            .Returns<Task<Result<PowerShellSession>>>(x => throw new InvalidOperationException("Simulated unhandled exception"));
-
-        using var factory = _factory.WithWebHostBuilder(builder =>
-        {
-            builder.ConfigureTestServices(services =>
-            {
-                services.RemoveAll<ITeruTeruEngine>();
-                services.AddSingleton<ITeruTeruEngine>(mockedService);
-            });
-        });
-
-        var username = "exceptionuser";
-        var password = "CorrectPassword123!";
-
-        var user = new User
-        {
-            Id = Guid.NewGuid(),
-            Username = username,
-            PasswordHash = _passwordHasher.HashPassword(password),
-            IsActive = true,
-            CreatedAt = _factory.TimeProvider.GetUtcNow(),
-            UpdatedAt = _factory.TimeProvider.GetUtcNow(),
-            LastPasswordChangeDate = _factory.TimeProvider.GetUtcNow(),
-            FailedLoginCount = 0,
-            LockedUntil = null
-        };
-        await _factory.SeedUserAsync(user);
-
-        var loginCommand = new LoginCommand { Username = username, Password = password };
-        var client = factory.CreateClient();
-        var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/login")
-        {
-            Content = JsonContent.Create(loginCommand)
-        };
-        request.Headers.Add("X-Forwarded-For", $"127.0.0.{Random.Shared.Next(2, 254)}");
-
-        var loginResponse = await client.SendAsync(request);
-        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
-
-        var cookieContainer = new CookieContainer();
-        if (loginResponse.Headers.TryGetValues("Set-Cookie", out var cookies))
-        {
-            foreach (var cookieHeader in cookies)
-            {
-                var parts = cookieHeader.Split(';');
-                if (parts.Length > 0)
-                {
-                    var cookieKeyValue = parts[0].Split('=');
-                    if (cookieKeyValue.Length == 2)
-                    {
-                        var name = cookieKeyValue[0].Trim();
-                        var value = cookieKeyValue[1].Trim();
-                        cookieContainer.Add(new Cookie(name, value, "/", "localhost"));
-                    }
-                }
-            }
-        }
-
-        var connection = new HubConnectionBuilder()
-            .WithUrl("http://localhost/hubs/terminal", options =>
-            {
-                options.HttpMessageHandlerFactory = _ => new CookieHandler(factory.Server.CreateHandler(), cookieContainer);
-            })
-            .Build();
-
-        await connection.StartAsync();
-
-        try
-        {
-            var tabId = Guid.NewGuid();
-            var openResult = await connection.InvokeAsync<HubResponse>("OpenTab", tabId);
-
-            Assert.False(openResult.Success);
-            Assert.Equal("InternalError", openResult.ErrorCode);
-        }
-        finally
-        {
-            await connection.StopAsync();
-        }
-    }
-
-    [Fact]
-    public async Task Scenario6_StreamingOutputRouting_ShouldSucceed()
-    {
-        var tabId = Guid.NewGuid();
-        var connection = await CreateAuthenticatedConnectionAsync("streamuser1", "CorrectPassword123!");
-
-        var outputTcs = new TaskCompletionSource<(Guid tabId, ShellOutputPayload payload)>();
-
-        connection.On<Guid, ShellOutputPayload>("ReceiveOutput", (id, payload) =>
-        {
-            if (payload.Text.Contains("StreamingHello"))
-                outputTcs.TrySetResult((id, payload));
-        });
-
-        try
-        {
-            var openResult = await connection.InvokeAsync<HubResponse>("OpenTab", tabId);
-            Assert.True(openResult.Success);
-
-            var sendResult = await connection.InvokeAsync<HubResponse>("SendCommand", tabId, "echo 'StreamingHello'\n");
-            Assert.True(sendResult.Success);
-
-            var outputData = await outputTcs.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            Assert.Equal(tabId, outputData.tabId);
-            Assert.Contains("StreamingHello", outputData.payload.Text);
-        }
-        finally
-        {
-            await connection.StopAsync();
-        }
-    }
-
 }

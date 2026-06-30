@@ -3,9 +3,8 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
-using WebPowerShell.Application.Common.Interfaces;
-using WebPowerShell.Application.Common.Models;
 using WebPowerShell.Domain.Common;
+using WebPowerShell.Infrastructure.ConPTY;
 
 namespace WebPowerShell.WebAPI.Hubs;
 
@@ -13,13 +12,13 @@ namespace WebPowerShell.WebAPI.Hubs;
 public class TerminalHub : Hub
 {
     private readonly ILogger<TerminalHub> _logger;
-    private readonly ITeruTeruEngine _engine;
+    private readonly ITerminalSessionManager _sessionManager;
     private readonly IHubContext<TerminalHub> _hubContext;
 
-    public TerminalHub(ILogger<TerminalHub> logger, ITeruTeruEngine engine, IHubContext<TerminalHub> hubContext)
+    public TerminalHub(ILogger<TerminalHub> logger, ITerminalSessionManager sessionManager, IHubContext<TerminalHub> hubContext)
     {
         _logger = logger;
-        _engine = engine;
+        _sessionManager = sessionManager;
         _hubContext = hubContext;
     }
 
@@ -37,116 +36,117 @@ public class TerminalHub : Hub
         var userIdString = Context.UserIdentifier ?? "unknown";
         var connectionId = Context.ConnectionId;
 
-        if (exception != null)
-        {
-            _logger.LogWarning(exception, "User {UserId} disconnected with connection ID {ConnectionId} due to an error", userIdString, connectionId);
-        }
-        else
-        {
-            _logger.LogInformation("User {UserId} disconnected with connection ID {ConnectionId}", userIdString, connectionId);
-        }
+        _logger.LogInformation(exception, "User {UserId} disconnected with connection ID {ConnectionId}", userIdString, connectionId);
 
-        if (TryGetUserId(out var userId))
-        {
-            // Do not use Context.ConnectionAborted since the connection is already disconnected/aborted
-            var result = await _engine.CloseAllSessionsForUserAsync(userId, CancellationToken.None);
-            if (result.IsSuccess)
-            {
-                _logger.LogInformation("Closed {Count} sessions for user {UserId} upon disconnect.", result.Value, userId);
-            }
-            else
-            {
-                _logger.LogWarning("Failed to close sessions for user {UserId} upon disconnect: {FailureMessage}", userId, result.Failure?.Message);
-            }
-        }
-
+        // We DO NOT close sessions immediately. We just Detach them.
+        // TerminalSessionManager will clean them up after the Grace Period.
+        
         await base.OnDisconnectedAsync(exception);
     }
 
-    public async Task<HubResponse> OpenTab(Guid tabId)
+    public async Task<HubResponse> CreateSession(Guid tabId)
     {
-        if (!TryGetUserId(out var userId))
-        {
-            return HubResponse.Fail(AppFailure.Unauthorized);
-        }
+        if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        var connectionId = Context.ConnectionId;
+        // Profile Selection could be dynamic. Default to pwsh for now.
+        var options = new TerminalLaunchOptions(
+            Executable: "cmd.exe",
+            Arguments: "",
+            WorkingDirectory: Environment.CurrentDirectory,
+            Environment: null,
+            Columns: 80,
+            Rows: 24
+        );
 
-        var result = await _engine.CreateSessionAsync(
-            userId, 
-            tabId,
-            onOutput: async (payload) => 
-            {
-                try { await _hubContext.Clients.Client(connectionId).SendAsync("ReceiveOutput", tabId, payload); }
-                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send ReceiveOutput"); }
-            },
-            onExited: async () => 
-            {
-                try { await _hubContext.Clients.Client(connectionId).SendAsync("SessionExited", tabId); }
-                catch (Exception ex) { _logger.LogWarning(ex, "Failed to send SessionExited"); }
-            },
-            Context.ConnectionAborted);
+        var result = await _sessionManager.CreateSessionAsync(userId, tabId, options);
+        if (!result.IsSuccess) return HubResponse.Fail(result.Failure!);
+        
+        var session = result.Value!;
+        
+        session.OnOutput = async (byte[] chunk) => {
+            try { await _hubContext.Clients.Client(session.ConnectionId ?? "").SendAsync("TerminalOutput", tabId, chunk); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Failed to send TerminalOutput"); }
+        };
+        
+        session.OnExited = async (int? exitCode) => {
+            try { await _hubContext.Clients.Client(session.ConnectionId ?? "").SendAsync("TerminalExited", tabId, exitCode); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Failed to send TerminalExited"); }
+        };
 
-        if (!result.IsSuccess)
-        {
-            return HubResponse.Fail(result.Failure!);
-        }
+        // Automatically attach
+        session.Attach(Context.ConnectionId);
 
         return HubResponse.Ok();
     }
 
-    public async Task<HubResponse> SendCommand(Guid tabId, string command)
+    public async Task<HubResponse> AttachSession(Guid tabId)
     {
-        if (!TryGetUserId(out var userId))
-        {
-            return HubResponse.Fail(AppFailure.Unauthorized);
-        }
+        if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        // PTY 방식처럼 실시간 키 입력이 아니라,
-        // TeruTeruShell은 완성된 명령어를 전달받아 실행합니다.
-        string inputToWrite = command;
+        var result = _sessionManager.GetSession(tabId);
+        if (!result.IsSuccess) return HubResponse.Fail(result.Failure!);
+        
+        var session = result.Value!;
+        if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        var result = await _engine.ExecuteCommandAsync(userId, tabId, inputToWrite, Context.ConnectionAborted);
+        session.Attach(Context.ConnectionId);
+        return HubResponse.Ok();
+    }
+    
+    public async Task<HubResponse> DetachSession(Guid tabId)
+    {
+        if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        if (!result.IsSuccess)
-        {
-            return HubResponse.Fail(result.Failure!);
-        }
+        var result = _sessionManager.GetSession(tabId);
+        if (!result.IsSuccess) return HubResponse.Fail(result.Failure!);
+        
+        var session = result.Value!;
+        if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        // 기존 클라이언트가 CommandCompleted를 기다렸으나, PTY 방식에서는 명령 완료 개념이 없으므로
-        // 더 이상 CommandCompleted 이벤트를 강제로 발생시키지 않습니다.
-
+        session.Detach();
         return HubResponse.Ok();
     }
 
-    public async Task<HubResponse> StopCommand(Guid tabId)
+    public async Task<HubResponse> SendInput(Guid tabId, byte[] input)
     {
-        if (!TryGetUserId(out var userId))
-        {
-            return HubResponse.Fail(AppFailure.Unauthorized);
-        }
+        if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        var result = await _engine.StopCommandAsync(userId, tabId, Context.ConnectionAborted);
-        if (!result.IsSuccess)
-        {
-            return HubResponse.Fail(result.Failure!);
-        }
+        var result = _sessionManager.GetSession(tabId);
+        if (!result.IsSuccess) return HubResponse.Fail(result.Failure!);
+        
+        var session = result.Value!;
+        if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
 
+        await session.SendInputAsync(input);
         return HubResponse.Ok();
     }
 
-    public async Task<HubResponse> CloseTab(Guid tabId)
+    public async Task<HubResponse> Resize(Guid tabId, int columns, int rows)
     {
-        if (!TryGetUserId(out var userId))
-        {
-            return HubResponse.Fail(AppFailure.Unauthorized);
-        }
+        if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        var result = await _engine.CloseSessionAsync(userId, tabId, Context.ConnectionAborted);
-        if (!result.IsSuccess)
-        {
-            return HubResponse.Fail(result.Failure!);
-        }
+        var result = _sessionManager.GetSession(tabId);
+        if (!result.IsSuccess) return HubResponse.Fail(result.Failure!);
+        
+        var session = result.Value!;
+        if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
+
+        await session.ResizeAsync(columns, rows);
+        return HubResponse.Ok();
+    }
+
+    public async Task<HubResponse> CloseSession(Guid tabId)
+    {
+        if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
+
+        var result = _sessionManager.GetSession(tabId);
+        if (!result.IsSuccess) return HubResponse.Fail(result.Failure!);
+        
+        var session = result.Value!;
+        if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
+
+        var closeResult = await _sessionManager.CloseSessionAsync(tabId);
+        if (!closeResult.IsSuccess) return HubResponse.Fail(closeResult.Failure!);
 
         return HubResponse.Ok();
     }
@@ -156,3 +156,4 @@ public class TerminalHub : Hub
         return Guid.TryParse(Context.UserIdentifier, out userId);
     }
 }
+
