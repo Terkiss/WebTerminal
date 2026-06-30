@@ -48,3 +48,12 @@ PtyTest/
 test_*.ps1
 test_*.cs
 pty_dump.cs
+
+# Terukirdo Top Secret Files
+AGENTS.md
+Terukirdo_Protocol_v5.2.md
+Terukirdo_memory.txt
+Terukirdo_Trajectory.txt
+MEMORY.md
+IMPLEMENTATION_PROGRESS.md
+prd.txt
