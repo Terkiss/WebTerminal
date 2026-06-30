@@ -38,6 +38,9 @@ builder.Services.AddSingleton<ITerminalSessionManager, TerminalSessionManager>()
 // Handlers
 builder.Services.AddScoped<LoginCommandHandler>();
 builder.Services.AddScoped<ChangePasswordCommandHandler>();
+builder.Services.AddScoped<WebPowerShell.Application.Users.Commands.CreateUser.CreateUserCommandHandler>();
+
+
 
 // OpenAPI
 builder.Services.AddOpenApi();
@@ -145,6 +148,11 @@ app.MapPost("/api/auth/login", async (LoginCommand command, LoginCommandHandler 
         new Claim(ClaimTypes.Name, response.Username)
     };
 
+    if (response.IsAdmin)
+    {
+        claims.Add(new Claim(ClaimTypes.Role, "Admin"));
+    }
+
     var claimsIdentity = new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme);
     var authProperties = new AuthenticationProperties
     {
@@ -184,6 +192,18 @@ app.MapPost("/api/auth/logout", async (HttpContext httpContext) =>
     return Results.Ok(new { Success = true });
 })
 .RequireAuthorization();
+
+app.MapPost("/api/users", async (WebPowerShell.Application.Users.Commands.CreateUser.CreateUserCommand command, WebPowerShell.Application.Users.Commands.CreateUser.CreateUserCommandHandler handler) =>
+{
+    var result = await handler.HandleAsync(command);
+    if (result.IsFailure)
+    {
+        return Results.Json(result.Failure, statusCode: StatusCodes.Status400BadRequest);
+    }
+
+    return Results.Ok(new { UserId = result.Value });
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
 
 var summaries = new[]
 {

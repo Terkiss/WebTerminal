@@ -14,7 +14,8 @@ const state = {
     connection: null,
     tabs: new Map(), // tabId (string) -> Tab instance
     activeTabId: null,
-    username: 'Administrator'
+    username: 'Administrator',
+    isAdmin: false
 };
 
 // Cryptographically Strong UUID Generator Fallback
@@ -91,9 +92,14 @@ function showAppView() {
     document.getElementById('loginOverlay').classList.remove('active');
     document.getElementById('appContainer').classList.remove('hidden');
     
-    const displayUser = document.getElementById('displayUsername');
+    const displayUser = document.getElementById('welcomeUser'); // Fixed ID from index.html
     if (displayUser) {
-        displayUser.textContent = state.username;
+        displayUser.textContent = `Welcome, ${state.username}`;
+    }
+    
+    const adminBtn = document.getElementById('adminBtn');
+    if (adminBtn) {
+        adminBtn.style.display = state.isAdmin ? 'inline-block' : 'none';
     }
     
     initSignalR();
@@ -551,6 +557,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (response.ok) {
                     const data = await response.json();
                     state.username = data.username || usernameInput.value;
+                    state.isAdmin = data.isAdmin === true;
                     passwordInput.value = '';
                     showAppView();
                 } else {
@@ -723,6 +730,65 @@ document.addEventListener('DOMContentLoaded', () => {
         sidebarOverlay.addEventListener('click', () => {
             sidebar.classList.remove('active');
             sidebarOverlay.classList.remove('active');
+        });
+    }
+
+    // 9. Admin Dashboard
+    const adminBtn = document.getElementById('adminBtn');
+    const adminModal = document.getElementById('adminModal');
+    const createUserForm = document.getElementById('createUserForm');
+
+    if (adminBtn && adminModal) {
+        adminBtn.addEventListener('click', () => {
+            adminModal.classList.remove('hidden');
+            document.getElementById('createAuthError').classList.add('hidden');
+            document.getElementById('createAuthSuccess').classList.add('hidden');
+            if(createUserForm) createUserForm.reset();
+        });
+    }
+
+    if (createUserForm) {
+        createUserForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const submitBtn = createUserForm.querySelector('button[type="submit"]');
+            const errorMsg = document.getElementById('createAuthError');
+            const successMsg = document.getElementById('createAuthSuccess');
+            
+            submitBtn.disabled = true;
+            errorMsg.classList.add('hidden');
+            successMsg.classList.add('hidden');
+            
+            try {
+                const response = await fetch('/api/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('newUsername').value,
+                        password: document.getElementById('newUserPassword').value,
+                        isAdmin: document.getElementById('newUserIsAdmin').checked
+                    })
+                });
+                
+                if (response.ok) {
+                    successMsg.classList.remove('hidden');
+                    createUserForm.reset();
+                    setTimeout(() => adminModal.classList.add('hidden'), 2000);
+                } else {
+                    let errMsg = 'Failed to create user.';
+                    try {
+                        const errorData = await response.json();
+                        if (errorData && errorData.message) errMsg = errorData.message;
+                    } catch(err) {}
+                    errorMsg.textContent = errMsg;
+                    errorMsg.classList.remove('hidden');
+                }
+            } catch (err) {
+                errorMsg.textContent = 'Server connection failed.';
+                errorMsg.classList.remove('hidden');
+                console.error(err);
+            } finally {
+                submitBtn.disabled = false;
+            }
         });
     }
 });

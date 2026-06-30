@@ -13,5 +13,7 @@ namespace WebPowerShell.Domain.Common
         public static readonly AppFailure CommandTimedOut = new("CommandTimedOut", "명령 실행 시간이 초과되었습니다.");
         public static readonly AppFailure RateLimitExceeded = new("RateLimitExceeded", "요청 횟수 제한을 초과했습니다.");
         public static readonly AppFailure InternalError = new("InternalError", "서버 내부 오류가 발생했습니다.");
+        public static readonly AppFailure InvalidInput = new("InvalidInput", "입력값이 올바르지 않습니다.");
+        public static readonly AppFailure UserAlreadyExists = new("UserAlreadyExists", "이미 존재하는 사용자 이름입니다.");
     }
 }

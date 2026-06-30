@@ -7,5 +7,6 @@ namespace WebPowerShell.Application.Users.Common
         public Guid UserId { get; set; }
         public string Username { get; set; } = string.Empty;
         public bool IsPasswordExpired { get; set; }
+        public bool IsAdmin { get; set; }
     }
 }

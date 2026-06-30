@@ -66,7 +66,8 @@ namespace WebPowerShell.Application.Users.Commands.Login
             {
                 UserId = user.Id,
                 Username = user.Username,
-                IsPasswordExpired = isPasswordExpired
+                IsPasswordExpired = isPasswordExpired,
+                IsAdmin = user.IsAdmin
             };
 
             return Result<LoginResponseDto>.Success(response);
