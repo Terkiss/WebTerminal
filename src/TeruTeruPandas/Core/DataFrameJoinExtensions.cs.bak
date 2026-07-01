@@ -1,0 +1,540 @@
+using TeruTeruPandas.Core.Column;
+using TeruTeruPandas.Core.Index;
+using TeruTeruPandas.Core.Engine;
+
+namespace TeruTeruPandas.Core;
+
+/// <summary>
+/// DataFrame Merge/Join/Concat 기능 확장
+/// pandas 동형의 merge, join, concat 기능 구현
+/// Phase 1: Hash Join 엔진 통합
+/// </summary>
+public static class DataFrameJoinExtensions
+{
+    /// <summary>
+    /// Inner/Left/Right/Outer 조인 지원하는 Merge 기능
+    /// strategy: Auto, Hash, Index, NestedLoop
+    /// </summary>
+    public static DataFrame Merge(
+        this DataFrame left, 
+        DataFrame right, 
+        string on, 
+        string how = "inner",
+        JoinStrategy strategy = JoinStrategy.Auto)
+    {
+        if (!left.Columns.Contains(on) || !right.Columns.Contains(on))
+            throw new ArgumentException($"Column '{on}' not found in one or both DataFrames");
+        
+        var leftColumn = left[on];
+        var rightColumn = right[on];
+        
+        // Join 타입 결정
+        var joinType = how.ToLower() switch
+        {
+            "inner" => JoinType.Inner,
+            "left" => JoinType.Left,
+            "right" => JoinType.Right,
+            "outer" => JoinType.Outer,
+            _ => throw new ArgumentException($"Unsupported join type: {how}")
+        };
+        
+        // 전략 자동 선택
+        if (strategy == JoinStrategy.Auto)
+        {
+            strategy = SelectJoinStrategy(left, right, on);
+        }
+        
+        // 조인 실행
+        List<(int leftIndex, int rightIndex)> joinResults = strategy switch
+        {
+            JoinStrategy.Hash => HashJoinEngine.Execute(leftColumn, rightColumn, joinType),
+            JoinStrategy.Index => HashJoinEngine.ExecuteWithIndex(leftColumn, left.Index, rightColumn, right.Index, joinType),
+            JoinStrategy.NestedLoop => PerformNestedLoopJoin(leftColumn, rightColumn, joinType),
+            _ => HashJoinEngine.Execute(leftColumn, rightColumn, joinType)
+        };
+        
+        // 결과 DataFrame 생성
+        return CreateJoinedDataFrame(left, right, joinResults, on);
+    }
+    
+    /// <summary>
+    /// Join 전략 자동 선택
+    /// </summary>
+    private static JoinStrategy SelectJoinStrategy(DataFrame left, DataFrame right, string on)
+    {
+        const int NESTED_LOOP_THRESHOLD = 100;
+        
+        // 작은 테이블은 Nested Loop
+        if (left.RowCount < NESTED_LOOP_THRESHOLD && right.RowCount < NESTED_LOOP_THRESHOLD)
+        {
+            return JoinStrategy.NestedLoop;
+        }
+        
+        // Index가 있으면 Index Join
+        // TODO: Index 활용 가능 여부 체크 로직 추가
+        
+        // 기본: Hash Join
+        return JoinStrategy.Hash;
+    }
+    
+    /// <summary>
+    /// Nested Loop Join (fallback)
+    /// </summary>
+    private static List<(int leftIndex, int rightIndex)> PerformNestedLoopJoin(
+        IColumn leftColumn,
+        IColumn rightColumn,
+        JoinType joinType)
+    {
+        switch (joinType)
+        {
+            case JoinType.Inner:
+                return PerformInnerJoin(leftColumn, rightColumn);
+            case JoinType.Left:
+                return PerformLeftJoin(leftColumn, rightColumn);
+            case JoinType.Right:
+                return PerformRightJoin(leftColumn, rightColumn);
+            case JoinType.Outer:
+                return PerformOuterJoin(leftColumn, rightColumn);
+            default:
+                throw new ArgumentException($"Unsupported join type: {joinType}");
+        }
+    }
+    
+    /// <summary>
+    /// 인덱스 기반 조인
+    /// </summary>
+    public static DataFrame Join(this DataFrame left, DataFrame right, string how = "left")
+    {
+        // 인덱스를 기준으로 조인
+        var joinResults = new List<(int leftIndex, int rightIndex)>();
+        
+        switch (how.ToLower())
+        {
+            case "inner":
+                for (int i = 0; i < Math.Min(left.RowCount, right.RowCount); i++)
+                {
+                    joinResults.Add((i, i));
+                }
+                break;
+            case "left":
+                for (int i = 0; i < left.RowCount; i++)
+                {
+                    int rightIndex = i < right.RowCount ? i : -1;
+                    joinResults.Add((i, rightIndex));
+                }
+                break;
+            case "right":
+                for (int i = 0; i < right.RowCount; i++)
+                {
+                    int leftIndex = i < left.RowCount ? i : -1;
+                    joinResults.Add((leftIndex, i));
+                }
+                break;
+            case "outer":
+                int maxRows = Math.Max(left.RowCount, right.RowCount);
+                for (int i = 0; i < maxRows; i++)
+                {
+                    int leftIndex = i < left.RowCount ? i : -1;
+                    int rightIndex = i < right.RowCount ? i : -1;
+                    joinResults.Add((leftIndex, rightIndex));
+                }
+                break;
+            default:
+                throw new ArgumentException($"Unsupported join type: {how}");
+        }
+        
+        return CreateJoinedDataFrame(left, right, joinResults, null);
+    }
+    
+    /// <summary>
+    /// 행/열 단위 연결
+    /// </summary>
+    public static DataFrame Concat(IEnumerable<DataFrame> dataframes, int axis = 0)
+        {
+            case "inner":
+                for (int i = 0; i < Math.Min(left.RowCount, right.RowCount); i++)
+                {
+                    joinResults.Add((i, i));
+                }
+                break;
+            case "left":
+                for (int i = 0; i < left.RowCount; i++)
+                {
+                    int rightIndex = i < right.RowCount ? i : -1;
+                    joinResults.Add((i, rightIndex));
+                }
+                break;
+            case "right":
+                for (int i = 0; i < right.RowCount; i++)
+                {
+                    int leftIndex = i < left.RowCount ? i : -1;
+                    joinResults.Add((leftIndex, i));
+                }
+                break;
+            case "outer":
+                int maxRows = Math.Max(left.RowCount, right.RowCount);
+                for (int i = 0; i < maxRows; i++)
+                {
+                    int leftIndex = i < left.RowCount ? i : -1;
+                    int rightIndex = i < right.RowCount ? i : -1;
+                    joinResults.Add((leftIndex, rightIndex));
+                }
+                break;
+            default:
+                throw new ArgumentException($"Unsupported join type: {how}");
+        }
+        
+        return CreateJoinedDataFrame(left, right, joinResults, null);
+    }
+    
+    /// <summary>
+    /// 행/열 단위 연결
+    /// </summary>
+    public static DataFrame Concat(IEnumerable<DataFrame> dataframes, int axis = 0)
+    {
+        var dfList = dataframes.ToList();
+        if (dfList.Count == 0)
+            throw new ArgumentException("At least one DataFrame is required");
+        
+        if (axis == 0) // 행 방향 연결
+        {
+            return ConcatRows(dfList);
+        }
+        else if (axis == 1) // 열 방향 연결
+        {
+            return ConcatColumns(dfList);
+        }
+        else
+        {
+            throw new ArgumentException("Axis must be 0 (rows) or 1 (columns)");
+        }
+    }
+    
+    private static List<(int leftIndex, int rightIndex)> PerformInnerJoin(IColumn leftColumn, IColumn rightColumn)
+    {
+        var results = new List<(int leftIndex, int rightIndex)>();
+        
+        for (int i = 0; i < leftColumn.Length; i++)
+        {
+            if (leftColumn.IsNA(i)) continue;
+            
+            var leftValue = leftColumn.GetValue(i);
+            
+            for (int j = 0; j < rightColumn.Length; j++)
+            {
+                if (rightColumn.IsNA(j)) continue;
+                
+                var rightValue = rightColumn.GetValue(j);
+                
+                if (ValuesEqual(leftValue, rightValue))
+                {
+                    results.Add((i, j));
+                }
+            }
+        }
+        
+        return results;
+    }
+    
+    private static List<(int leftIndex, int rightIndex)> PerformLeftJoin(IColumn leftColumn, IColumn rightColumn)
+    {
+        var results = new List<(int leftIndex, int rightIndex)>();
+        
+        for (int i = 0; i < leftColumn.Length; i++)
+        {
+            bool found = false;
+            
+            if (!leftColumn.IsNA(i))
+            {
+                var leftValue = leftColumn.GetValue(i);
+                
+                for (int j = 0; j < rightColumn.Length; j++)
+                {
+                    if (rightColumn.IsNA(j)) continue;
+                    
+                    var rightValue = rightColumn.GetValue(j);
+                    
+                    if (ValuesEqual(leftValue, rightValue))
+                    {
+                        results.Add((i, j));
+                        found = true;
+                        break; // 첫 번째 매치만 사용
+                    }
+                }
+            }
+            
+            if (!found)
+            {
+                results.Add((i, -1)); // 매치되지 않은 경우
+            }
+        }
+        
+        return results;
+    }
+    
+    private static List<(int leftIndex, int rightIndex)> PerformRightJoin(IColumn leftColumn, IColumn rightColumn)
+    {
+        var results = new List<(int leftIndex, int rightIndex)>();
+        
+        for (int j = 0; j < rightColumn.Length; j++)
+        {
+            bool found = false;
+            
+            if (!rightColumn.IsNA(j))
+            {
+                var rightValue = rightColumn.GetValue(j);
+                
+                for (int i = 0; i < leftColumn.Length; i++)
+                {
+                    if (leftColumn.IsNA(i)) continue;
+                    
+                    var leftValue = leftColumn.GetValue(i);
+                    
+                    if (ValuesEqual(leftValue, rightValue))
+                    {
+                        results.Add((i, j));
+                        found = true;
+                        break; // 첫 번째 매치만 사용
+                    }
+                }
+            }
+            
+            if (!found)
+            {
+                results.Add((-1, j)); // 매치되지 않은 경우
+            }
+        }
+        
+        return results;
+    }
+    
+    private static List<(int leftIndex, int rightIndex)> PerformOuterJoin(IColumn leftColumn, IColumn rightColumn)
+    {
+        var leftJoin = PerformLeftJoin(leftColumn, rightColumn);
+        var rightJoin = PerformRightJoin(leftColumn, rightColumn);
+        
+        // 중복 제거를 위한 집합 사용
+        var resultSet = new HashSet<(int, int)>(leftJoin);
+        
+        foreach (var item in rightJoin)
+        {
+            resultSet.Add(item);
+        }
+        
+        return resultSet.ToList();
+    }
+    
+    private static bool ValuesEqual(object? left, object? right)
+    {
+        if (left == null && right == null) return true;
+        if (left == null || right == null) return false;
+        
+        return left.Equals(right);
+    }
+    
+    private static DataFrame CreateJoinedDataFrame(DataFrame left, DataFrame right, List<(int leftIndex, int rightIndex)> joinResults, string? joinColumn)
+    {
+        var resultColumns = new Dictionary<string, IColumn>();
+        var resultRowCount = joinResults.Count;
+        
+        // 왼쪽 DataFrame의 컬럼들 추가
+        foreach (var columnName in left.Columns)
+        {
+            var resultColumnName = joinColumn == columnName ? columnName : $"{columnName}_left";
+            resultColumns[resultColumnName] = CreateJoinedColumn(left[columnName], joinResults.Select(r => r.leftIndex).ToList());
+        }
+        
+        // 오른쪽 DataFrame의 컬럼들 추가 (조인 키 컬럼 제외)
+        foreach (var columnName in right.Columns)
+        {
+            if (joinColumn != null && columnName == joinColumn) continue; // 조인 키는 중복 제거
+            
+            var resultColumnName = $"{columnName}_right";
+            resultColumns[resultColumnName] = CreateJoinedColumn(right[columnName], joinResults.Select(r => r.rightIndex).ToList());
+        }
+        
+        return new DataFrame(resultColumns, new RangeIndex(resultRowCount));
+    }
+    
+    private static IColumn CreateJoinedColumn(IColumn sourceColumn, List<int> indices)
+    {
+        if (sourceColumn is PrimitiveColumn<int> intColumn)
+        {
+            var data = new int[indices.Count];
+            var naMask = new bool[indices.Count];
+            
+            for (int i = 0; i < indices.Count; i++)
+            {
+                var index = indices[i];
+                if (index >= 0 && index < intColumn.Length)
+                {
+                    if (intColumn.IsNA(index))
+                    {
+                        naMask[i] = true;
+                    }
+                    else
+                    {
+                        data[i] = (int)intColumn.GetValue(index)!;
+                    }
+                }
+                else
+                {
+                    naMask[i] = true; // 매치되지 않은 경우 NA
+                }
+            }
+            
+            return new PrimitiveColumn<int>(data, naMask);
+        }
+        else if (sourceColumn is PrimitiveColumn<double> doubleColumn)
+        {
+            var data = new double[indices.Count];
+            var naMask = new bool[indices.Count];
+            
+            for (int i = 0; i < indices.Count; i++)
+            {
+                var index = indices[i];
+                if (index >= 0 && index < doubleColumn.Length)
+                {
+                    if (doubleColumn.IsNA(index))
+                    {
+                        naMask[i] = true;
+                    }
+                    else
+                    {
+                        data[i] = (double)doubleColumn.GetValue(index)!;
+                    }
+                }
+                else
+                {
+                    naMask[i] = true;
+                }
+            }
+            
+            return new PrimitiveColumn<double>(data, naMask);
+        }
+        else if (sourceColumn is StringColumn stringColumn)
+        {
+            var data = new string?[indices.Count];
+            var naMask = new bool[indices.Count];
+            
+            for (int i = 0; i < indices.Count; i++)
+            {
+                var index = indices[i];
+                if (index >= 0 && index < stringColumn.Length)
+                {
+                    if (stringColumn.IsNA(index))
+                    {
+                        naMask[i] = true;
+                    }
+                    else
+                    {
+                        data[i] = stringColumn.GetValue(index)?.ToString();
+                    }
+                }
+                else
+                {
+                    naMask[i] = true;
+                }
+            }
+            
+            return new StringColumn(data, naMask);
+        }
+        else
+        {
+            throw new NotSupportedException($"Join not supported for column type: {sourceColumn.GetType()}");
+        }
+    }
+    
+    private static DataFrame ConcatRows(List<DataFrame> dataframes)
+    {
+        // 모든 DataFrame이 같은 컬럼을 가져야 함
+        var firstDf = dataframes[0];
+        var commonColumns = firstDf.Columns.ToHashSet();
+        
+        foreach (var df in dataframes.Skip(1))
+        {
+            if (!df.Columns.ToHashSet().SetEquals(commonColumns))
+                throw new ArgumentException("All DataFrames must have the same columns for row concatenation");
+        }
+        
+        var totalRows = dataframes.Sum(df => df.RowCount);
+        var resultColumns = new Dictionary<string, IColumn>();
+        
+        foreach (var columnName in commonColumns)
+        {
+            var columnData = new List<object?>();
+            var naMask = new List<bool>();
+            
+            foreach (var df in dataframes)
+            {
+                var column = df[columnName];
+                for (int i = 0; i < column.Length; i++)
+                {
+                    if (column.IsNA(i))
+                    {
+                        naMask.Add(true);
+                        columnData.Add(null);
+                    }
+                    else
+                    {
+                        naMask.Add(false);
+                        columnData.Add(column.GetValue(i));
+                    }
+                }
+            }
+            
+            resultColumns[columnName] = CreateConcatenatedColumn(columnData, naMask, firstDf[columnName].DataType);
+        }
+        
+        return new DataFrame(resultColumns, new RangeIndex(totalRows));
+    }
+    
+    private static DataFrame ConcatColumns(List<DataFrame> dataframes)
+    {
+        // 모든 DataFrame이 같은 행 수를 가져야 함
+        var rowCount = dataframes[0].RowCount;
+        if (dataframes.Any(df => df.RowCount != rowCount))
+            throw new ArgumentException("All DataFrames must have the same number of rows for column concatenation");
+        
+        var resultColumns = new Dictionary<string, IColumn>();
+        
+        foreach (var df in dataframes)
+        {
+            foreach (var columnName in df.Columns)
+            {
+                var uniqueColumnName = columnName;
+                int suffix = 1;
+                
+                // 컬럼명 중복 방지
+                while (resultColumns.ContainsKey(uniqueColumnName))
+                {
+                    uniqueColumnName = $"{columnName}_{suffix}";
+                    suffix++;
+                }
+                
+                resultColumns[uniqueColumnName] = df[columnName].Clone();
+            }
+        }
+        
+        return new DataFrame(resultColumns, new RangeIndex(rowCount));
+    }
+    
+    private static IColumn CreateConcatenatedColumn(List<object?> data, List<bool> naMask, Type dataType)
+    {
+        if (dataType == typeof(int))
+        {
+            var intData = data.Select((v, i) => naMask[i] ? 0 : Convert.ToInt32(v ?? 0)).ToArray();
+            return new PrimitiveColumn<int>(intData, naMask.ToArray());
+        }
+        else if (dataType == typeof(double))
+        {
+            var doubleData = data.Select((v, i) => naMask[i] ? 0.0 : Convert.ToDouble(v ?? 0.0)).ToArray();
+            return new PrimitiveColumn<double>(doubleData, naMask.ToArray());
+        }
+        else // string
+        {
+            var stringData = data.Select(v => v?.ToString()).ToArray();
+            return new StringColumn(stringData, naMask.ToArray());
+        }
+    }
+}

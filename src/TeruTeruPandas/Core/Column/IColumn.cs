@@ -1,0 +1,80 @@
+namespace TeruTeruPandas.Core.Column;
+
+/// <summary>
+/// 내부 열 데이터 표현체, Primitive/String/Categorical 등 세분화
+/// </summary>
+public interface IColumn
+{
+    /// <summary>
+    /// 컬럼의 데이터 타입
+    /// </summary>
+    Type DataType { get; }
+    
+    /// <summary>
+    /// 컬럼의 길이 (행 수)
+    /// </summary>
+    int Length { get; }
+    
+    /// <summary>
+    /// 지정된 인덱스의 값을 가져옵니다
+    /// </summary>
+    object? GetValue(int index);
+    
+    /// <summary>
+    /// 지정된 인덱스의 값을 설정합니다
+    /// </summary>
+    void SetValue(int index, object? value);
+    
+    /// <summary>
+    /// 지정된 인덱스가 NA(결측치)인지 확인합니다
+    /// </summary>
+    bool IsNA(int index);
+    
+    /// <summary>
+    /// 지정된 인덱스를 NA로 설정합니다
+    /// </summary>
+    void SetNA(int index);
+    
+    /// <summary>
+    /// 컬럼의 복사본을 생성합니다
+    /// </summary>
+    IColumn Clone();
+    
+    /// <summary>
+    /// 선택한 범위를 복사하여 새로운 컬럼을 생성합니다 (copy slice)
+    /// </summary>
+    IColumn Slice(int start, int length);
+    
+    // 정렬 지원
+    int[] Argsort(bool ascending = true);
+    IColumn Reorder(int[] indices);
+
+    // 결측치 처리
+    IColumn FillNA(object? value);
+    IColumn FillNA(string method); // "ffill", "bfill"
+
+    // 산술 연산
+    IColumn Add(IColumn other);
+    IColumn Add(object scalar);
+    IColumn Sub(IColumn other);
+    IColumn Sub(object scalar);
+    IColumn Mul(IColumn other);
+    IColumn Mul(object scalar);
+    IColumn Div(IColumn other);
+    IColumn Div(object scalar);
+    IColumn Mod(IColumn other);
+    IColumn Mod(object scalar);
+    IColumn Pow(IColumn other);
+    IColumn Pow(object scalar);
+
+    // Aggregation
+    double Sum();
+    double Mean();
+    object? Max();
+    object? Min();
+    double Median();
+    double Var();
+    double Std();
+    double Quantile(double q);
+    IColumn Shift(int periods);
+}

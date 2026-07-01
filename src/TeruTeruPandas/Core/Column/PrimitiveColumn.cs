@@ -1,0 +1,959 @@
+using System.Buffers;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using TeruTeruPandas.Core.SIMD;
+using System;
+
+using System.Linq;
+namespace TeruTeruPandas.Core.Column;
+
+/// <summary>
+/// 기본 데이터 타입(int, double, string 등)을 위한 컬럼 구현.
+/// `ArrayPool<T>`를 사용하여 대규모 데이터 처리 시 객체 할당(Allocation)을 최소화하고 가비지 컬렉터(GC) 부하를 줄입니다.
+/// </summary>
+public class PrimitiveColumn<T> : IColumn, IDisposable where T : struct
+{
+    private readonly ArrayPool<T> _arrayPool = ArrayPool<T>.Shared;
+    private T[] _data;
+    private bool[] _naMask;
+    private readonly bool _isOwner;
+    private bool _disposed;
+
+    public Type DataType => typeof(T);
+    public int Length { get; private set; }
+
+    /// <summary>
+    /// 지정된 길이의 빈 컬럼을 생성합니다. 내부 데이터 배열은 `ArrayPool`에서 임대(Rent)됩니다.
+    /// </summary>
+    /// <param name="length">컬럼의 행 개수</param>
+    public PrimitiveColumn(int length)
+    {
+        Length = length;
+        _data = _arrayPool.Rent(length); // 풀에서 메모리 임대 (Zero-Allocation)
+        _naMask = new bool[length];
+        _isOwner = true; // 내부에서 빌린 배열이므로 Dispose 시 반납 권한을 가짐
+        _disposed = false;
+    }
+
+    /// <summary>
+    /// 기존 배열을 사용하여 컬럼을 생성합니다. (I/O 파서 등에서 사용)
+    /// </summary>
+    /// <param name="data">초기화할 데이터 배열</param>
+    /// <param name="naMask">결측치(NA) 마스크 배열. 없으면 전부 false로 초기화됨.</param>
+    /// <param name="isOwner">true일 경우 이 컬럼이 해당 배열의 소유권을 가지며, Dispose 시 ArrayPool로 반납합니다.</param>
+    public PrimitiveColumn(T[] data, bool[]? naMask = null, bool isOwner = false)
+    {
+        _data = data;
+        Length = data.Length;
+        _naMask = naMask ?? new bool[Length];
+        _isOwner = isOwner; // IO 스트리머로부터 넘어온 배열의 소유권 위임 여부
+        _disposed = false;
+    }
+
+    public object? GetValue(int index)
+    {
+        if (index < 0 || index >= Length)
+            throw new IndexOutOfRangeException();
+
+        return _naMask[index] ? null : _data[index];
+    }
+
+    public void SetValue(int index, object? value)
+    {
+        if (index < 0 || index >= Length)
+            throw new IndexOutOfRangeException();
+
+        if (value == null)
+        {
+            SetNA(index);
+        }
+        else
+        {
+            _data[index] = (T)value;
+            _naMask[index] = false;
+        }
+    }
+
+    public bool IsNA(int index)
+    {
+        if (index < 0 || index >= Length)
+            throw new IndexOutOfRangeException();
+
+        return _naMask[index];
+    }
+
+    public void SetNA(int index)
+    {
+        if (index < 0 || index >= Length)
+            throw new IndexOutOfRangeException();
+
+        _naMask[index] = true;
+    }
+
+    public IColumn Clone()
+    {
+        var newData = new T[Length];
+        var newNaMask = new bool[Length];
+
+        Array.Copy(_data, newData, Length);
+        Array.Copy(_naMask, newNaMask, Length);
+
+        return new PrimitiveColumn<T>(newData, newNaMask);
+    }
+
+    public IColumn Slice(int start, int length)
+    {
+        if (start < 0 || start + length > Length)
+            throw new ArgumentOutOfRangeException();
+
+        var slicedData = new T[length];
+        var slicedNaMask = new bool[length];
+
+        Array.Copy(_data, start, slicedData, 0, length);
+        Array.Copy(_naMask, start, slicedNaMask, 0, length);
+
+        return new PrimitiveColumn<T>(slicedData, slicedNaMask);
+    }
+
+    /// <summary>
+    /// 직접 데이터 배열에 접근 (성능 최적화용)
+    /// </summary>
+    public Span<T> AsSpan() => _data.AsSpan(0, Length);
+
+    /// <summary>
+    /// NA 마스크에 직접 접근
+    /// </summary>
+    public ReadOnlySpan<bool> GetNAMask() => _naMask.AsSpan(0, Length);
+
+    /// <summary>
+    /// 벡터화된 연산을 위한 메서드 (SIMD 최적화)
+    /// </summary>
+    public void VectorizedAdd(T scalar)
+    {
+        var dataSpan = AsSpan();
+        var naMask = _naMask.AsSpan(0, Length);
+
+        // SIMD 최적화된 연산 (float 타입의 경우)
+        if (typeof(T) == typeof(float))
+        {
+            VectorizedAddFloat(dataSpan, naMask, scalar);
+        }
+        else
+        {
+            VectorizedAddGeneric(dataSpan, naMask, scalar);
+        }
+    }
+
+    private void VectorizedAddFloat(Span<T> dataSpan, ReadOnlySpan<bool> naMask, T scalar)
+    {
+        var floatSpan = MemoryMarshal.Cast<T, float>(dataSpan);
+        var floatScalar = Unsafe.As<T, float>(ref scalar);
+        var result = new float[floatSpan.Length];
+
+        SimdOperations.AddScalar(floatSpan, floatScalar, result);
+
+        // 결과를 다시 복사 (NA 마스크 고려)
+        for (int i = 0; i < Length; i++)
+        {
+            if (!naMask[i])
+            {
+                floatSpan[i] = result[i];
+            }
+        }
+    }
+
+    private void VectorizedAddGeneric(Span<T> dataSpan, ReadOnlySpan<bool> naMask, T scalar)
+    {
+        for (int i = 0; i < dataSpan.Length; i++)
+        {
+            if (!naMask[i])
+            {
+                // 타입별 덧셈 처리
+                if (typeof(T) == typeof(int))
+                {
+                    ref var intRef = ref Unsafe.As<T, int>(ref dataSpan[i]);
+                    var intScalar = Unsafe.As<T, int>(ref scalar);
+                    intRef += intScalar;
+                }
+                else if (typeof(T) == typeof(double))
+                {
+                    ref var doubleRef = ref Unsafe.As<T, double>(ref dataSpan[i]);
+                    var doubleScalar = Unsafe.As<T, double>(ref scalar);
+                    doubleRef += doubleScalar;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// SIMD 최적화된 합계 계산
+    /// </summary>
+    public double Sum()
+    {
+        if (typeof(T) == typeof(float))
+        {
+            return SumFloat();
+        }
+
+        return SumGeneric();
+    }
+
+    private double SumFloat()
+    {
+        var dataSpan = AsSpan();
+        var floatSpan = MemoryMarshal.Cast<T, float>(dataSpan);
+
+        // NA가 아닌 값들만 필터링하여 새 배열 생성
+        var validValues = new List<float>();
+        var nullMask = _naMask.AsSpan(0, Length);
+
+        for (int i = 0; i < Length; i++)
+        {
+            if (!nullMask[i])
+            {
+                validValues.Add(floatSpan[i]);
+            }
+        }
+
+        if (validValues.Count() == 0) return 0.0;
+
+        return SimdOperations.SumAvx2(validValues.ToArray());
+    }
+
+    private double SumGeneric()
+    {
+        double sum = 0.0;
+        var dataSpan = AsSpan();
+        var nullMask = _naMask.AsSpan(0, Length);
+
+        for (int i = 0; i < Length; i++)
+        {
+            if (!nullMask[i])
+            {
+                sum += Convert.ToDouble(dataSpan[i]);
+            }
+        }
+
+        return sum;
+    }
+
+    /// <summary>
+    /// SIMD 최적화된 평균 계산
+    /// </summary>
+    public double Mean()
+    {
+        var validCount = CountValid();
+        return validCount > 0 ? Sum() / validCount : 0.0;
+    }
+
+    /// <summary>
+    /// 유효한 값의 개수
+    /// </summary>
+    public int CountValid()
+    {
+        int count = 0;
+        var naMask = _naMask.AsSpan(0, Length);
+
+        for (int i = 0; i < Length; i++)
+        {
+            if (!naMask[i]) count++;
+        }
+
+        return count;
+    }
+
+    public object? Max()
+    {
+        if (Length == 0) return null;
+        T? max = null;
+        for (int i = 0; i < Length; i++)
+        {
+            if (!_naMask[i])
+            {
+                if (max == null || Comparer<T>.Default.Compare(_data[i], max.Value) > 0)
+                    max = _data[i];
+            }
+        }
+        return max;
+    }
+
+    public object? Min()
+    {
+        if (Length == 0) return null;
+        T? min = null;
+        for (int i = 0; i < Length; i++)
+        {
+            if (!_naMask[i])
+            {
+                if (min == null || Comparer<T>.Default.Compare(_data[i], min.Value) < 0)
+                    min = _data[i];
+            }
+        }
+        return min;
+    }
+
+    public double Median() => Quantile(0.5);
+
+    public double Quantile(double q)
+    {
+        if (q < 0 || q > 1) throw new ArgumentOutOfRangeException(nameof(q));
+
+        var valid = new List<double>();
+        for (int i = 0; i < Length; i++)
+        {
+            if (!_naMask[i]) valid.Add(Convert.ToDouble(_data[i]));
+        }
+
+        if (valid.Count() == 0) return double.NaN;
+
+        valid.Sort();
+
+        double pos = (valid.Count() - 1) * q;
+        int lowerInfo = (int)Math.Floor(pos);
+        int upperInfo = (int)Math.Ceiling(pos);
+
+        if (lowerInfo == upperInfo) return valid[lowerInfo];
+
+        double fraction = pos - lowerInfo;
+        return valid[lowerInfo] * (1 - fraction) + valid[upperInfo] * fraction;
+    }
+
+    public double Var()
+    {
+        // Sample Variance (n-1)
+        double m = Mean();
+        double sumSq = 0.0;
+        int count = 0;
+
+        for (int i = 0; i < Length; i++)
+        {
+            if (!_naMask[i])
+            {
+                double d = Convert.ToDouble(_data[i]);
+                sumSq += (d - m) * (d - m);
+                count++;
+            }
+        }
+
+        if (count <= 1) return double.NaN;
+        return sumSq / (count - 1);
+    }
+
+    public double Std() => Math.Sqrt(Var());
+
+    /// <summary>
+    /// 컬럼이 소유한 내부 배열의 메모리를 명시적으로 반환합니다. 
+    /// ArrayPool의 자원 고갈(Starvation) 및 GC 지연을 방지하는 핵심 메서드입니다.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+
+        // 소유권이 있는 배열만 풀에 반납 처리
+        if (_isOwner && _data != null)
+        {
+            _arrayPool.Return(_data); // 값 타입이므로 clearArray: false 가 기본으로 작동
+        }
+
+        _data = Array.Empty<T>();
+        _naMask = Array.Empty<bool>();
+        _disposed = true;
+        GC.SuppressFinalize(this);
+    }
+
+    ~PrimitiveColumn()
+    {
+        Dispose();
+    }
+
+    // 비교 연산자 - BoolSeries 반환
+    public static BoolSeries operator >=(PrimitiveColumn<T> column, object value)
+    {
+        var result = new bool[column.Length];
+        for (int i = 0; i < column.Length; i++)
+        {
+            if (!column._naMask[i])
+            {
+                result[i] = CompareValues(column._data[i], value, (a, b) => Comparer<T>.Default.Compare(a, (T)b) >= 0);
+            }
+        }
+        return new BoolSeries(result);
+    }
+
+    public static BoolSeries operator <=(PrimitiveColumn<T> column, object value)
+    {
+        var result = new bool[column.Length];
+        for (int i = 0; i < column.Length; i++)
+        {
+            if (!column._naMask[i])
+            {
+                result[i] = CompareValues(column._data[i], value, (a, b) => Comparer<T>.Default.Compare(a, (T)b) <= 0);
+            }
+        }
+        return new BoolSeries(result);
+    }
+
+    public static BoolSeries operator >(PrimitiveColumn<T> column, object value)
+    {
+        var result = new bool[column.Length];
+        for (int i = 0; i < column.Length; i++)
+        {
+            if (!column._naMask[i])
+            {
+                result[i] = CompareValues(column._data[i], value, (a, b) => Comparer<T>.Default.Compare(a, (T)b) > 0);
+            }
+        }
+        return new BoolSeries(result);
+    }
+
+    public static BoolSeries operator <(PrimitiveColumn<T> column, object value)
+    {
+        var result = new bool[column.Length];
+        for (int i = 0; i < column.Length; i++)
+        {
+            if (!column._naMask[i])
+            {
+                result[i] = CompareValues(column._data[i], value, (a, b) => Comparer<T>.Default.Compare(a, (T)b) < 0);
+            }
+        }
+        return new BoolSeries(result);
+    }
+
+    public static BoolSeries operator ==(PrimitiveColumn<T> column, object value)
+    {
+        var result = new bool[column.Length];
+        for (int i = 0; i < column.Length; i++)
+        {
+            if (!column._naMask[i])
+            {
+                result[i] = CompareValues(column._data[i], value, (a, b) => EqualityComparer<T>.Default.Equals(a, (T)b));
+            }
+        }
+        return new BoolSeries(result);
+    }
+
+    public static BoolSeries operator !=(PrimitiveColumn<T> column, object value)
+    {
+        var result = new bool[column.Length];
+        for (int i = 0; i < column.Length; i++)
+        {
+            if (!column._naMask[i])
+            {
+                result[i] = CompareValues(column._data[i], value, (a, b) => !EqualityComparer<T>.Default.Equals(a, (T)b));
+            }
+        }
+        return new BoolSeries(result);
+    }
+
+    private static bool CompareValues(T columnValue, object value, Func<T, object, bool> comparer)
+    {
+        try
+        {
+            return comparer(columnValue, value);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public override bool Equals(object? obj) => base.Equals(obj);
+    public override int GetHashCode() => base.GetHashCode();
+
+    public IColumn FillNA(object? value)
+    {
+        T fillValue;
+        if (value == null)
+        {
+            // value가 null이면 default(T) 사용하거나, 에러를 내거나... 
+            // 여기서는 default(T)로 처리하지만 _naMask를 false로 만들 것이므로 의미 있는 값이 필요함.
+            // 보통 PrimitiveColumn에서 null로 채우라는 건 말이 안됨 (이미 NA인데).
+            // 하지만 호출자가 "0"이나 "0.0"을 줄 것임.
+            fillValue = default(T);
+        }
+        else
+        {
+            fillValue = (T)Convert.ChangeType(value, typeof(T));
+        }
+
+        var newData = new T[Length];
+        var newNaMask = new bool[Length]; // 모두 false (NA 없음)
+
+        for (int i = 0; i < Length; i++)
+        {
+            if (_naMask[i])
+            {
+                newData[i] = fillValue;
+            }
+            else
+            {
+                newData[i] = _data[i];
+            }
+        }
+
+        return new PrimitiveColumn<T>(newData, newNaMask);
+    }
+
+    public IColumn FillNA(string method)
+    {
+        var newData = new T[Length];
+        var newNaMask = new bool[Length];
+        Array.Copy(_data, newData, Length);
+        Array.Copy(_naMask, newNaMask, Length);
+
+        if (method.ToLower() == "ffill" || method.ToLower() == "pad")
+        {
+            T lastValid = default(T);
+            bool hasValid = false;
+
+            for (int i = 0; i < Length; i++)
+            {
+                if (!newNaMask[i])
+                {
+                    lastValid = newData[i];
+                    hasValid = true;
+                }
+                else if (hasValid)
+                {
+                    newData[i] = lastValid;
+                    newNaMask[i] = false; // 채워졌으므로 NA 아님
+                }
+            }
+        }
+        else if (method.ToLower() == "bfill" || method.ToLower() == "backfill")
+        {
+            T lastValid = default(T);
+            bool hasValid = false;
+
+            for (int i = Length - 1; i >= 0; i--)
+            {
+                if (!newNaMask[i])
+                {
+                    lastValid = newData[i];
+                    hasValid = true;
+                }
+                else if (hasValid)
+                {
+                    newData[i] = lastValid;
+                    newNaMask[i] = false;
+                }
+            }
+        }
+        else
+        {
+            throw new ArgumentException($"Unknown FillNA method: {method}");
+        }
+
+        return new PrimitiveColumn<T>(newData, newNaMask);
+    }
+
+    public int[] Argsort(bool ascending = true)
+    {
+        var indices = Enumerable.Range(0, Length).ToArray();
+        Array.Sort(indices, (a, b) =>
+        {
+            if (_naMask[a] && _naMask[b]) return 0;
+            if (_naMask[a]) return 1;
+            if (_naMask[b]) return -1;
+
+            int cmp = Comparer<T>.Default.Compare(_data[a], _data[b]);
+            return ascending ? cmp : -cmp;
+        });
+        return indices;
+    }
+
+    public IColumn Reorder(int[] indices)
+    {
+        var newData = new T[indices.Length];
+        var newNaMask = new bool[indices.Length];
+
+        for (int i = 0; i < indices.Length; i++)
+        {
+            int oldIndex = indices[i];
+            newData[i] = _data[oldIndex];
+            newNaMask[i] = _naMask[oldIndex];
+        }
+
+        return new PrimitiveColumn<T>(newData, newNaMask);
+    }
+
+    /// <summary>
+    /// 컬럼의 데이터 타입을 변경하고 새 컬럼 반환
+    /// </summary>
+    public PrimitiveColumn<TOut> Cast<TOut>() where TOut : struct
+    {
+        var newData = new TOut[Length];
+        var newNaMask = new bool[Length];
+        Array.Copy(_naMask, newNaMask, Length);
+
+        for (int i = 0; i < Length; i++)
+        {
+            if (!_naMask[i])
+            {
+                newData[i] = (TOut)Convert.ChangeType(_data[i], typeof(TOut));
+            }
+        }
+        return new PrimitiveColumn<TOut>(newData, newNaMask);
+    }
+
+    // --- 산술 연산 ---
+
+    private static Type GetResultType(Type a, Type b)
+    {
+        if (a == typeof(double) || b == typeof(double)) return typeof(double);
+        if (a == typeof(float) || b == typeof(float)) return typeof(float); // double check covered above
+        if (a == typeof(decimal) || b == typeof(decimal)) return typeof(decimal);
+        if (a == typeof(long) || b == typeof(long)) return typeof(long);
+        return typeof(int); // default common type
+    }
+
+    // 상향된 타입에 대해 제네릭 산술을 호출하기 위한 헬퍼
+    private IColumn PerformOperation(IColumn other, string opName)
+    {
+        var resultType = GetResultType(typeof(T), other.DataType);
+
+        // 1. 결과 타입이 T와 일치하면, 상대방도 T인지 확인
+        if (resultType == typeof(T) && other.DataType == typeof(T))
+        {
+            // 동일 타입 연산
+            return opName switch
+            {
+                "Add" => AddSameType((PrimitiveColumn<T>)other),
+                "Sub" => SubSameType((PrimitiveColumn<T>)other),
+                "Mul" => MulSameType((PrimitiveColumn<T>)other),
+                "Div" => DivSameType((PrimitiveColumn<T>)other),
+                "Mod" => ModSameType((PrimitiveColumn<T>)other),
+                _ => throw new NotSupportedException($"Operation {opName} not supported")
+            };
+        }
+
+        // 2. 타입 상향(Promotion) 필요
+        // 현재 객체를 resultType으로 변환
+        var left = this.GetType() == typeof(PrimitiveColumn<>).MakeGenericType(resultType)
+                   ? (IColumn)this
+                   : (IColumn)GetType().GetMethod("Cast")!.MakeGenericMethod(resultType).Invoke(this, null)!;
+
+        // 상대방 객체를 resultType으로 변환
+        var right = other.DataType == resultType
+                    ? other
+                    : (other is PrimitiveColumn<int> pInt ? (IColumn)pInt.Cast<double>() : // 일반적인 캐스팅을 위한 최적화? 아니오, 제네릭 디스패치를 유지합니다.
+                       (IColumn)other.GetType().GetMethod("Cast")!.MakeGenericMethod(resultType).Invoke(other, null)!);
+        // 참고: 상대방은 IColumn 인터페이스를 유지해야 하지만 Cast는 구체적인 타입을 반환합니다. 
+        // 상대방이 PrimitiveColumn인 경우 리플렉션을 통해 Cast를 호출할 수 있습니다.
+
+        // 3. 상향된 컬럼들에 대한 재귀적 호출
+        return opName switch
+        {
+            "Add" => left.Add(right),
+            "Sub" => left.Sub(right),
+            "Mul" => left.Mul(right),
+            "Div" => left.Div(right),
+            "Mod" => left.Mod(right),
+            "Pow" => left.Pow(right),
+            _ => throw new NotSupportedException()
+        };
+    }
+
+    private IColumn PerformScalarOperation(object scalar, string opName)
+    {
+        // 스칼라 상향?
+        Type scalarType = scalar.GetType();
+        Type resultType = GetResultType(typeof(T), scalarType);
+
+        if (resultType == typeof(T))
+        {
+            return opName switch
+            {
+                "Add" => AddScalarSameType((T)scalar),
+                "Sub" => SubScalarSameType((T)scalar),
+                "Mul" => MulScalarSameType((T)scalar),
+                "Div" => DivScalarSameType((T)scalar),
+                "Mod" => ModScalarSameType((T)scalar),
+                _ => throw new NotSupportedException()
+            };
+        }
+
+        // 현재 객체만 상향합니다. 스칼라는 캐스팅됩니다.
+        var left = (IColumn)GetType().GetMethod("Cast")!.MakeGenericMethod(resultType).Invoke(this, null)!;
+        object promotedScalar = Convert.ChangeType(scalar, resultType);
+
+        return opName switch
+        {
+            "Add" => left.Add(promotedScalar),
+            "Sub" => left.Sub(promotedScalar),
+            "Mul" => left.Mul(promotedScalar),
+            "Div" => left.Div(promotedScalar),
+            "Mod" => left.Mod(promotedScalar),
+            "Pow" => left.Pow(promotedScalar),
+            _ => throw new NotSupportedException()
+        };
+    }
+
+    public IColumn Add(IColumn other) => PerformOperation(other, "Add");
+    public IColumn Sub(IColumn other) => PerformOperation(other, "Sub");
+    public IColumn Mul(IColumn other) => PerformOperation(other, "Mul");
+    public IColumn Div(IColumn other) => PerformOperation(other, "Div");
+    public IColumn Mod(IColumn other) => PerformOperation(other, "Mod");
+    public IColumn Pow(IColumn other)
+    {
+        // PerformOperation 로직에 따라 상대방은 T 타입이어야 합니다.
+        if (other is not PrimitiveColumn<T> otherPrim)
+            throw new ArgumentException("Incompatible column type for Pow");
+
+        if (typeof(T) == typeof(double))
+        {
+            return PowDouble((PrimitiveColumn<double>)(object)this, (PrimitiveColumn<double>)(object)otherPrim);
+        }
+        if (typeof(T) == typeof(float))
+        {
+            return PowFloat((PrimitiveColumn<float>)(object)this, (PrimitiveColumn<float>)(object)otherPrim);
+        }
+        if (typeof(T) == typeof(int) || typeof(T) == typeof(long))
+        {
+            return this.Cast<double>().Pow(otherPrim.Cast<double>());
+        }
+        throw new NotSupportedException($"Pow not supported for {typeof(T)}");
+    }
+
+    public IColumn Pow(object scalar)
+    {
+        if (typeof(T) == typeof(double))
+        {
+            return PowScalarDouble((PrimitiveColumn<double>)(object)this, Convert.ToDouble(scalar));
+        }
+        if (typeof(T) == typeof(float))
+        {
+            return PowScalarFloat((PrimitiveColumn<float>)(object)this, Convert.ToSingle(scalar));
+        }
+        if (typeof(T) == typeof(int) || typeof(T) == typeof(long))
+        {
+            return this.Cast<double>().Pow(Convert.ToDouble(scalar));
+        }
+        throw new NotSupportedException($"Pow not supported for {typeof(T)}");
+    }
+
+    public IColumn Add(object scalar) => PerformScalarOperation(scalar, "Add");
+    public IColumn Sub(object scalar) => PerformScalarOperation(scalar, "Sub");
+    public IColumn Mul(object scalar) => PerformScalarOperation(scalar, "Mul");
+    public IColumn Div(object scalar) => PerformScalarOperation(scalar, "Div");
+    public IColumn Mod(object scalar) => PerformScalarOperation(scalar, "Mod");
+    // Pow(object scalar) is already added above (or below in file structure, check carefully)
+
+    // --- 거듭제곱(Pow) 헬퍼 ---
+    private IColumn PowDouble(PrimitiveColumn<double> left, PrimitiveColumn<double> right)
+    {
+        var res = new double[left.Length];
+        var m = new bool[left.Length];
+        for (int i = 0; i < left.Length; i++)
+        {
+            m[i] = left._naMask[i] | right._naMask[i];
+            if (!m[i]) res[i] = Math.Pow(left._data[i], right._data[i]);
+        }
+        return new PrimitiveColumn<double>(res, m);
+    }
+
+    private IColumn PowFloat(PrimitiveColumn<float> left, PrimitiveColumn<float> right)
+    {
+        var res = new float[left.Length];
+        var m = new bool[left.Length];
+        for (int i = 0; i < left.Length; i++)
+        {
+            m[i] = left._naMask[i] | right._naMask[i];
+            if (!m[i]) res[i] = MathF.Pow(left._data[i], right._data[i]);
+        }
+        return new PrimitiveColumn<float>(res, m);
+    }
+
+    private IColumn PowScalarDouble(PrimitiveColumn<double> left, double scalar)
+    {
+        var res = new double[left.Length];
+        for (int i = 0; i < left.Length; i++)
+        {
+            if (!left._naMask[i]) res[i] = Math.Pow(left._data[i], scalar);
+        }
+        return new PrimitiveColumn<double>(res, (bool[])left._naMask.Clone());
+    }
+
+    private IColumn PowScalarFloat(PrimitiveColumn<float> left, float scalar)
+    {
+        var res = new float[left.Length];
+        for (int i = 0; i < left.Length; i++)
+        {
+            if (!left._naMask[i]) res[i] = MathF.Pow(left._data[i], scalar);
+        }
+        return new PrimitiveColumn<float>(res, (bool[])left._naMask.Clone());
+    }
+
+    // --- 동일 타입 구현 (성능을 위해 루프 풀기 적용) ---
+
+    private IColumn AddSameType(PrimitiveColumn<T> other)
+    {
+        var result = new T[Length];
+        var resultMask = new bool[Length];
+        Array.Copy(_naMask, resultMask, Length);
+        for (int i = 0; i < Length; i++) resultMask[i] |= other._naMask[i];
+
+        if (typeof(T) == typeof(int))
+            SimdOperations.AddArrays(MemoryMarshal.Cast<T, int>(_data.AsSpan()), MemoryMarshal.Cast<T, int>(other._data.AsSpan()), MemoryMarshal.Cast<T, int>(result.AsSpan()));
+        else if (typeof(T) == typeof(double))
+            SimdOperations.AddArrays(MemoryMarshal.Cast<T, double>(_data.AsSpan()), MemoryMarshal.Cast<T, double>(other._data.AsSpan()), MemoryMarshal.Cast<T, double>(result.AsSpan()));
+        else if (typeof(T) == typeof(float))
+            SimdOperations.AddArrays(MemoryMarshal.Cast<T, float>(_data.AsSpan()), MemoryMarshal.Cast<T, float>(other._data.AsSpan()), MemoryMarshal.Cast<T, float>(result.AsSpan()));
+        else if (typeof(T) == typeof(long))
+            SimdOperations.AddArrays(MemoryMarshal.Cast<T, long>(_data.AsSpan()), MemoryMarshal.Cast<T, long>(other._data.AsSpan()), MemoryMarshal.Cast<T, long>(result.AsSpan()));
+        else
+            return AddLoop(other);
+
+        return new PrimitiveColumn<T>(result, resultMask);
+    }
+
+    private IColumn SubSameType(PrimitiveColumn<T> other)
+    {
+        var result = new T[Length];
+        var resultMask = new bool[Length];
+        for (int i = 0; i < Length; i++) resultMask[i] = _naMask[i] | other._naMask[i];
+
+        if (typeof(T) == typeof(int)) SimdOperations.SubtractArrays(MemoryMarshal.Cast<T, int>(_data.AsSpan()), MemoryMarshal.Cast<T, int>(other._data.AsSpan()), MemoryMarshal.Cast<T, int>(result.AsSpan()));
+        else if (typeof(T) == typeof(double)) SimdOperations.SubtractArrays(MemoryMarshal.Cast<T, double>(_data.AsSpan()), MemoryMarshal.Cast<T, double>(other._data.AsSpan()), MemoryMarshal.Cast<T, double>(result.AsSpan()));
+        else if (typeof(T) == typeof(float)) SimdOperations.SubtractArrays(MemoryMarshal.Cast<T, float>(_data.AsSpan()), MemoryMarshal.Cast<T, float>(other._data.AsSpan()), MemoryMarshal.Cast<T, float>(result.AsSpan()));
+        else if (typeof(T) == typeof(long)) SimdOperations.SubtractArrays(MemoryMarshal.Cast<T, long>(_data.AsSpan()), MemoryMarshal.Cast<T, long>(other._data.AsSpan()), MemoryMarshal.Cast<T, long>(result.AsSpan()));
+        else return SubLoop(other);
+
+        return new PrimitiveColumn<T>(result, resultMask);
+    }
+
+    private IColumn MulSameType(PrimitiveColumn<T> other)
+    {
+        var result = new T[Length];
+        var resultMask = new bool[Length];
+        for (int i = 0; i < Length; i++) resultMask[i] = _naMask[i] | other._naMask[i];
+
+        if (typeof(T) == typeof(int)) SimdOperations.MultiplyArrays(MemoryMarshal.Cast<T, int>(_data.AsSpan()), MemoryMarshal.Cast<T, int>(other._data.AsSpan()), MemoryMarshal.Cast<T, int>(result.AsSpan()));
+        else if (typeof(T) == typeof(double)) SimdOperations.MultiplyArrays(MemoryMarshal.Cast<T, double>(_data.AsSpan()), MemoryMarshal.Cast<T, double>(other._data.AsSpan()), MemoryMarshal.Cast<T, double>(result.AsSpan()));
+        else if (typeof(T) == typeof(float)) SimdOperations.MultiplyArrays(MemoryMarshal.Cast<T, float>(_data.AsSpan()), MemoryMarshal.Cast<T, float>(other._data.AsSpan()), MemoryMarshal.Cast<T, float>(result.AsSpan()));
+        else if (typeof(T) == typeof(long)) SimdOperations.MultiplyArrays(MemoryMarshal.Cast<T, long>(_data.AsSpan()), MemoryMarshal.Cast<T, long>(other._data.AsSpan()), MemoryMarshal.Cast<T, long>(result.AsSpan()));
+        else return MulLoop(other);
+
+        return new PrimitiveColumn<T>(result, resultMask);
+    }
+
+    private IColumn DivSameType(PrimitiveColumn<T> other)
+    {
+        var result = new T[Length];
+        var resultMask = new bool[Length];
+        for (int i = 0; i < Length; i++) resultMask[i] = _naMask[i] | other._naMask[i];
+
+        if (typeof(T) == typeof(int)) SimdOperations.DivideArrays(MemoryMarshal.Cast<T, int>(_data.AsSpan()), MemoryMarshal.Cast<T, int>(other._data.AsSpan()), MemoryMarshal.Cast<T, int>(result.AsSpan()));
+        else if (typeof(T) == typeof(double)) SimdOperations.DivideArrays(MemoryMarshal.Cast<T, double>(_data.AsSpan()), MemoryMarshal.Cast<T, double>(other._data.AsSpan()), MemoryMarshal.Cast<T, double>(result.AsSpan()));
+        else if (typeof(T) == typeof(float)) SimdOperations.DivideArrays(MemoryMarshal.Cast<T, float>(_data.AsSpan()), MemoryMarshal.Cast<T, float>(other._data.AsSpan()), MemoryMarshal.Cast<T, float>(result.AsSpan()));
+        else if (typeof(T) == typeof(long)) SimdOperations.DivideArrays(MemoryMarshal.Cast<T, long>(_data.AsSpan()), MemoryMarshal.Cast<T, long>(other._data.AsSpan()), MemoryMarshal.Cast<T, long>(result.AsSpan()));
+        else return DivLoop(other);
+
+        return new PrimitiveColumn<T>(result, resultMask);
+    }
+
+    private IColumn ModSameType(PrimitiveColumn<T> other)
+    {
+        var result = new T[Length];
+        var resultMask = new bool[Length];
+        for (int i = 0; i < Length; i++) resultMask[i] = _naMask[i] | other._naMask[i];
+
+        if (typeof(T) == typeof(int)) SimdOperations.ModArrays(MemoryMarshal.Cast<T, int>(_data.AsSpan()), MemoryMarshal.Cast<T, int>(other._data.AsSpan()), MemoryMarshal.Cast<T, int>(result.AsSpan()));
+        else if (typeof(T) == typeof(double)) SimdOperations.ModArrays(MemoryMarshal.Cast<T, double>(_data.AsSpan()), MemoryMarshal.Cast<T, double>(other._data.AsSpan()), MemoryMarshal.Cast<T, double>(result.AsSpan()));
+        else return ModLoop(other);
+
+        return new PrimitiveColumn<T>(result, resultMask);
+    }
+
+    // 스칼라 동일 타입
+
+    private IColumn AddScalarSameType(T scalar)
+    {
+        var result = new T[Length];
+        if (typeof(T) == typeof(int)) SimdOperations.AddScalar(MemoryMarshal.Cast<T, int>(_data.AsSpan()), Unsafe.As<T, int>(ref scalar), MemoryMarshal.Cast<T, int>(result.AsSpan()));
+        else if (typeof(T) == typeof(double)) SimdOperations.AddScalar(MemoryMarshal.Cast<T, double>(_data.AsSpan()), Unsafe.As<T, double>(ref scalar), MemoryMarshal.Cast<T, double>(result.AsSpan()));
+        else if (typeof(T) == typeof(float)) SimdOperations.AddScalar(MemoryMarshal.Cast<T, float>(_data.AsSpan()), Unsafe.As<T, float>(ref scalar), MemoryMarshal.Cast<T, float>(result.AsSpan()));
+        else if (typeof(T) == typeof(long)) SimdOperations.AddScalar(MemoryMarshal.Cast<T, long>(_data.AsSpan()), Unsafe.As<T, long>(ref scalar), MemoryMarshal.Cast<T, long>(result.AsSpan()));
+        else return AddLoopScalar(scalar);
+
+        return new PrimitiveColumn<T>(result, (bool[])_naMask.Clone());
+    }
+
+    private IColumn SubScalarSameType(T scalar)
+    {
+        var result = new T[Length];
+        if (typeof(T) == typeof(int)) SimdOperations.SubtractScalar(MemoryMarshal.Cast<T, int>(_data.AsSpan()), Unsafe.As<T, int>(ref scalar), MemoryMarshal.Cast<T, int>(result.AsSpan()));
+        else if (typeof(T) == typeof(double)) SimdOperations.SubtractScalar(MemoryMarshal.Cast<T, double>(_data.AsSpan()), Unsafe.As<T, double>(ref scalar), MemoryMarshal.Cast<T, double>(result.AsSpan()));
+        else if (typeof(T) == typeof(float)) SimdOperations.SubtractScalar(MemoryMarshal.Cast<T, float>(_data.AsSpan()), Unsafe.As<T, float>(ref scalar), MemoryMarshal.Cast<T, float>(result.AsSpan()));
+        else if (typeof(T) == typeof(long)) SimdOperations.SubtractScalar(MemoryMarshal.Cast<T, long>(_data.AsSpan()), Unsafe.As<T, long>(ref scalar), MemoryMarshal.Cast<T, long>(result.AsSpan()));
+        else return SubLoopScalar(scalar);
+
+        return new PrimitiveColumn<T>(result, (bool[])_naMask.Clone());
+    }
+
+    private IColumn MulScalarSameType(T scalar)
+    {
+        var result = new T[Length];
+        if (typeof(T) == typeof(int)) SimdOperations.MultiplyScalar(MemoryMarshal.Cast<T, int>(_data.AsSpan()), Unsafe.As<T, int>(ref scalar), MemoryMarshal.Cast<T, int>(result.AsSpan()));
+        else if (typeof(T) == typeof(double)) SimdOperations.MultiplyScalar(MemoryMarshal.Cast<T, double>(_data.AsSpan()), Unsafe.As<T, double>(ref scalar), MemoryMarshal.Cast<T, double>(result.AsSpan()));
+        else if (typeof(T) == typeof(float)) SimdOperations.MultiplyScalar(MemoryMarshal.Cast<T, float>(_data.AsSpan()), Unsafe.As<T, float>(ref scalar), MemoryMarshal.Cast<T, float>(result.AsSpan()));
+        else if (typeof(T) == typeof(long)) SimdOperations.MultiplyScalar(MemoryMarshal.Cast<T, long>(_data.AsSpan()), Unsafe.As<T, long>(ref scalar), MemoryMarshal.Cast<T, long>(result.AsSpan()));
+        else return MulLoopScalar(scalar);
+
+        return new PrimitiveColumn<T>(result, (bool[])_naMask.Clone());
+    }
+
+    private IColumn DivScalarSameType(T scalar)
+    {
+        var result = new T[Length];
+        if (typeof(T) == typeof(int)) SimdOperations.DivideScalar(MemoryMarshal.Cast<T, int>(_data.AsSpan()), Unsafe.As<T, int>(ref scalar), MemoryMarshal.Cast<T, int>(result.AsSpan()));
+        else if (typeof(T) == typeof(double)) SimdOperations.DivideScalar(MemoryMarshal.Cast<T, double>(_data.AsSpan()), Unsafe.As<T, double>(ref scalar), MemoryMarshal.Cast<T, double>(result.AsSpan()));
+        else if (typeof(T) == typeof(float)) SimdOperations.DivideScalar(MemoryMarshal.Cast<T, float>(_data.AsSpan()), Unsafe.As<T, float>(ref scalar), MemoryMarshal.Cast<T, float>(result.AsSpan()));
+        else if (typeof(T) == typeof(long)) SimdOperations.DivideScalar(MemoryMarshal.Cast<T, long>(_data.AsSpan()), Unsafe.As<T, long>(ref scalar), MemoryMarshal.Cast<T, long>(result.AsSpan()));
+        else return DivLoopScalar(scalar);
+
+        return new PrimitiveColumn<T>(result, (bool[])_naMask.Clone());
+    }
+
+    private IColumn ModScalarSameType(T scalar)
+    {
+        // Mod는 아직 SimdOperations에서 벡터 최적화가 지원되지 않습니다.
+        return ModLoopScalar(scalar);
+    }
+
+    // --- 루프 폴백(Fallback) ---
+
+    private PrimitiveColumn<T> AddLoop(PrimitiveColumn<T> other) { var res = new T[Length]; var m = new bool[Length]; for (int i = 0; i < Length; i++) { m[i] = _naMask[i] | other._naMask[i]; if (!m[i]) res[i] = (dynamic)_data[i] + (dynamic)other._data[i]; } return new PrimitiveColumn<T>(res, m); }
+    private PrimitiveColumn<T> SubLoop(PrimitiveColumn<T> other) { var res = new T[Length]; var m = new bool[Length]; for (int i = 0; i < Length; i++) { m[i] = _naMask[i] | other._naMask[i]; if (!m[i]) res[i] = (dynamic)_data[i] - (dynamic)other._data[i]; } return new PrimitiveColumn<T>(res, m); }
+    private PrimitiveColumn<T> MulLoop(PrimitiveColumn<T> other) { var res = new T[Length]; var m = new bool[Length]; for (int i = 0; i < Length; i++) { m[i] = _naMask[i] | other._naMask[i]; if (!m[i]) res[i] = (dynamic)_data[i] * (dynamic)other._data[i]; } return new PrimitiveColumn<T>(res, m); }
+    private PrimitiveColumn<T> DivLoop(PrimitiveColumn<T> other) { var res = new T[Length]; var m = new bool[Length]; for (int i = 0; i < Length; i++) { m[i] = _naMask[i] | other._naMask[i]; if (!m[i]) res[i] = (dynamic)_data[i] / (dynamic)other._data[i]; } return new PrimitiveColumn<T>(res, m); }
+    private PrimitiveColumn<T> ModLoop(PrimitiveColumn<T> other) { var res = new T[Length]; var m = new bool[Length]; for (int i = 0; i < Length; i++) { m[i] = _naMask[i] | other._naMask[i]; if (!m[i]) res[i] = (dynamic)_data[i] % (dynamic)other._data[i]; } return new PrimitiveColumn<T>(res, m); }
+
+    private PrimitiveColumn<T> AddLoopScalar(T scalar) { var res = new T[Length]; for (int i = 0; i < Length; i++) { if (!_naMask[i]) res[i] = (dynamic)_data[i] + (dynamic)scalar; } return new PrimitiveColumn<T>(res, (bool[])_naMask.Clone()); }
+    private PrimitiveColumn<T> SubLoopScalar(T scalar) { var res = new T[Length]; for (int i = 0; i < Length; i++) { if (!_naMask[i]) res[i] = (dynamic)_data[i] - (dynamic)scalar; } return new PrimitiveColumn<T>(res, (bool[])_naMask.Clone()); }
+    private PrimitiveColumn<T> MulLoopScalar(T scalar) { var res = new T[Length]; for (int i = 0; i < Length; i++) { if (!_naMask[i]) res[i] = (dynamic)_data[i] * (dynamic)scalar; } return new PrimitiveColumn<T>(res, (bool[])_naMask.Clone()); }
+    private PrimitiveColumn<T> DivLoopScalar(T scalar) { var res = new T[Length]; for (int i = 0; i < Length; i++) { if (!_naMask[i]) res[i] = (dynamic)_data[i] / (dynamic)scalar; } return new PrimitiveColumn<T>(res, (bool[])_naMask.Clone()); }
+    private PrimitiveColumn<T> ModLoopScalar(T scalar) { var res = new T[Length]; for (int i = 0; i < Length; i++) { if (!_naMask[i]) res[i] = (dynamic)_data[i] % (dynamic)scalar; } return new PrimitiveColumn<T>(res, (bool[])_naMask.Clone()); }
+    public IColumn Shift(int periods)
+    {
+        var newData = new T[Length];
+        var newNaMask = new bool[Length];
+
+        for (int i = 0; i < Length; i++)
+        {
+            int sourceIdx = i - periods;
+            if (sourceIdx >= 0 && sourceIdx < Length)
+            {
+                newData[i] = _data[sourceIdx];
+                newNaMask[i] = _naMask[sourceIdx];
+            }
+            else
+            {
+                newNaMask[i] = true;
+            }
+        }
+
+        return new PrimitiveColumn<T>(newData, newNaMask);
+    }
+}

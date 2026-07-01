@@ -20,7 +20,7 @@ using WebPowerShell.WebAPI.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// DB Context & Repository
+// DB Context (AuditLog only)
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseInMemoryDatabase("WebPowerShellDb"));
 
@@ -30,7 +30,8 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.KnownProxies.Clear();
 });
 
-builder.Services.AddScoped<IUserRepository, UserRepository>();
+// User Repository: TeruTeruPandas DataFrame (in-memory)
+builder.Services.AddSingleton<IUserRepository, TeruTeruPandasUserRepository>();
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ITerminalSessionManager, TerminalSessionManager>();
@@ -226,13 +227,14 @@ app.MapGet("/api/weatherforecast", () =>
 .RequireAuthorization();
 
 
-using (var scope = app.Services.CreateScope())
+// Seed terukiss admin into TeruTeruPandas DataFrame
 {
-    var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    var hasher = scope.ServiceProvider.GetRequiredService<IPasswordHasher>();
-    if (!context.Users.Any())
+    var userRepo = app.Services.GetRequiredService<IUserRepository>();
+    var hasher = app.Services.GetRequiredService<IPasswordHasher>();
+    var existing = await userRepo.GetByUsernameAsync("terukiss");
+    if (!existing.IsSuccess)
     {
-        context.Users.Add(new WebPowerShell.Domain.Entities.User
+        await userRepo.SaveAsync(new WebPowerShell.Domain.Entities.User
         {
             Id = Guid.NewGuid(),
             Username = "terukiss",
@@ -243,7 +245,6 @@ using (var scope = app.Services.CreateScope())
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         });
-        context.SaveChanges();
     }
 }
 

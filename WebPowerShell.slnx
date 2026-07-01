@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/TeruTeruPandas/TeruTeruPandas.csproj" />
     <Project Path="src/WebPowerShell.Application/WebPowerShell.Application.csproj" />
     <Project Path="src/WebPowerShell.Domain/WebPowerShell.Domain.csproj" />
     <Project Path="src/WebPowerShell.Infrastructure/WebPowerShell.Infrastructure.csproj" />

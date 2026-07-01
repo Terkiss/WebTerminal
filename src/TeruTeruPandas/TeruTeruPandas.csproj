@@ -1,0 +1,32 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="Test\**\*.cs" />
+  </ItemGroup>
+
+  <Target Name="CleanTempDbAndResidues" AfterTargets="Clean">
+    <Message Text="[Clean] Removing temporary database files and build runtime residues..." Importance="high" />
+    <ItemGroup>
+      <TempDbFiles Include="db\**\*.db;db\**\*.sqlite" />
+      <OutTempDbFiles Include="$(OutDir)db\**\*.db;$(OutDir)db\**\*.sqlite" />
+      <OutTempDbFiles Include="$(TargetDir)db\**\*.db;$(TargetDir)db\**\*.sqlite" />
+    </ItemGroup>
+    <Delete Files="@(TempDbFiles);@(OutTempDbFiles)" />
+    <RemoveDir Directories="db;$(OutDir)db;$(TargetDir)db" />
+  </Target>
+</Project>

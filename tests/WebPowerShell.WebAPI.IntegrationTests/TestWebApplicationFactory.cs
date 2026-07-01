@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using WebPowerShell.Application.Common.Interfaces;
 using WebPowerShell.Domain.Entities;
 using WebPowerShell.Infrastructure.Persistence;
 
@@ -28,7 +29,7 @@ namespace WebPowerShell.WebAPI.IntegrationTests
                 // Remove existing DbContextOptions
                 services.RemoveAll<DbContextOptions<AppDbContext>>();
                 
-                // Add InMemory database context for tests
+                // Add InMemory database context for tests (AuditLog)
                 services.AddDbContext<AppDbContext>(options =>
                     options.UseInMemoryDatabase(DbName));
 
@@ -40,23 +41,17 @@ namespace WebPowerShell.WebAPI.IntegrationTests
 
         public async Task SeedUserAsync(User user)
         {
-            using var scope = Services.CreateScope();
-            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            
-            var existing = await context.Users.FindAsync(user.Id);
-            if (existing != null)
-            {
-                context.Users.Remove(existing);
-            }
-            await context.Users.AddAsync(user);
-            await context.SaveChangesAsync();
+            // Seed via IUserRepository (TeruTeruPandas DataFrame)
+            var userRepo = Services.GetRequiredService<IUserRepository>();
+            await userRepo.SaveAsync(user);
         }
 
         public async Task<User?> GetUserAsync(Guid userId)
         {
-            using var scope = Services.CreateScope();
-            var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            return await context.Users.FindAsync(userId);
+            // Retrieve via IUserRepository (TeruTeruPandas DataFrame)
+            var userRepo = Services.GetRequiredService<IUserRepository>();
+            var result = await userRepo.GetByIdAsync(userId);
+            return result.IsSuccess ? result.Value : null;
         }
     }
 }
