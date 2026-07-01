@@ -16,6 +16,7 @@ public sealed class TerminalSession : IAsyncDisposable
     public DateTimeOffset CreatedAt { get; }
     public DateTimeOffset LastActivityAt { get; set; }
     public string? ConnectionId { get; set; }
+    public string WorkingDirectory { get; private set; } = "";
 
     private readonly Channel<byte[]> _inputChannel;
     private readonly CancellationTokenSource _cts = new();
@@ -44,6 +45,7 @@ public sealed class TerminalSession : IAsyncDisposable
 
     public void Start(TerminalLaunchOptions options)
     {
+        WorkingDirectory = options.WorkingDirectory;
         _ = Process.StartAsync(options, _cts.Token).ContinueWith(t => {
             if (t.IsFaulted) _logger.LogError(t.Exception, "Failed to start terminal process");
             else {

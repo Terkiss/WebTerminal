@@ -10,4 +10,6 @@ public interface ITerminalSessionManager : IAsyncDisposable
     Task<Result<TerminalSession>> CreateSessionAsync(Guid userId, Guid sessionId, TerminalLaunchOptions options);
     Task<Result<bool>> CloseSessionAsync(Guid sessionId);
     Task<Result<int>> CloseAllSessionsForUserAsync(Guid userId);
+    IReadOnlyList<TerminalSession> GetAllSessions();
+    IReadOnlyList<TerminalSession> GetSessionsForUser(Guid userId);
 }

@@ -33,7 +33,9 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 // User Repository: TeruTeruPandas DataFrame (in-memory) + SQLite persistence
 builder.Services.AddSingleton<TeruTeruPandasUserRepository>();
 builder.Services.AddSingleton<IUserRepository>(sp => sp.GetRequiredService<TeruTeruPandasUserRepository>());
-builder.Services.AddHostedService<WebPowerShell.Infrastructure.Persistence.MemoryPersistenceService>();
+builder.Services.AddSingleton<WebPowerShell.Infrastructure.Persistence.MemoryPersistenceService>();
+builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
+    sp.GetRequiredService<WebPowerShell.Infrastructure.Persistence.MemoryPersistenceService>());
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ITerminalSessionManager, TerminalSessionManager>();

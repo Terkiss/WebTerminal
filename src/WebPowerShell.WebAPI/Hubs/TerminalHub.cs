@@ -1,10 +1,13 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using WebPowerShell.Domain.Common;
 using WebPowerShell.Infrastructure.ConPTY;
+using WebPowerShell.Infrastructure.Persistence;
 
 namespace WebPowerShell.WebAPI.Hubs;
 
@@ -14,12 +17,18 @@ public class TerminalHub : Hub
     private readonly ILogger<TerminalHub> _logger;
     private readonly ITerminalSessionManager _sessionManager;
     private readonly IHubContext<TerminalHub> _hubContext;
+    private readonly MemoryPersistenceService _persistenceService;
 
-    public TerminalHub(ILogger<TerminalHub> logger, ITerminalSessionManager sessionManager, IHubContext<TerminalHub> hubContext)
+    public TerminalHub(
+        ILogger<TerminalHub> logger,
+        ITerminalSessionManager sessionManager,
+        IHubContext<TerminalHub> hubContext,
+        MemoryPersistenceService persistenceService)
     {
         _logger = logger;
         _sessionManager = sessionManager;
         _hubContext = hubContext;
+        _persistenceService = persistenceService;
     }
 
     public override async Task OnConnectedAsync()
@@ -167,5 +176,70 @@ public class TerminalHub : Hub
     {
         return Guid.TryParse(Context.UserIdentifier, out userId);
     }
-}
 
+    /// <summary>
+    /// Returns the list of sessions for the current user.
+    /// Includes both live sessions and persisted (restorable) sessions.
+    /// </summary>
+    public List<object> ListSessions()
+    {
+        if (!TryGetUserId(out var userId)) return new List<object>();
+
+        var result = new List<object>();
+
+        // 1. Live sessions
+        var liveSessions = _sessionManager.GetSessionsForUser(userId);
+        var liveIds = new HashSet<Guid>(liveSessions.Select(s => s.SessionId));
+        foreach (var s in liveSessions)
+        {
+            result.Add(new { s.SessionId, s.WorkingDirectory, CreatedAt = s.CreatedAt.ToString("O"), IsLive = true });
+        }
+
+        // 2. Persisted sessions not already live (restorable)
+        var persisted = _persistenceService.GetPersistedSessions()
+            .Where(p => p.OwnerUserId == userId && !liveIds.Contains(p.SessionId));
+        foreach (var p in persisted)
+        {
+            result.Add(new { p.SessionId, p.WorkingDirectory, CreatedAt = p.CreatedAt.ToString("O"), IsLive = false });
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Restore a previously persisted session by creating a new process at the saved working directory.
+    /// </summary>
+    public async Task<HubResponse> RestoreSession(Guid tabId, string workingDirectory)
+    {
+        if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
+
+        var options = new TerminalLaunchOptions(
+            Executable: "powershell.exe",
+            Arguments: "-NoLogo",
+            WorkingDirectory: workingDirectory,
+            Environment: null,
+            Columns: 80,
+            Rows: 24
+        );
+
+        var result = await _sessionManager.CreateSessionAsync(userId, tabId, options);
+        if (!result.IsSuccess) return HubResponse.Fail(result.Failure!);
+
+        var session = result.Value!;
+
+        session.OnOutput = async (byte[] chunk) => {
+            try { await _hubContext.Clients.Client(session.ConnectionId ?? "").SendAsync("TerminalOutput", tabId, chunk); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Failed to send TerminalOutput"); }
+        };
+
+        session.OnExited = async (int? exitCode) => {
+            try { await _hubContext.Clients.Client(session.ConnectionId ?? "").SendAsync("TerminalExited", tabId, exitCode); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Failed to send TerminalExited"); }
+        };
+
+        session.Attach(Context.ConnectionId);
+        _logger.LogInformation("Restored session {TabId} at {WorkDir} for user {UserId}", tabId, workingDirectory, userId);
+
+        return HubResponse.Ok();
+    }
+}

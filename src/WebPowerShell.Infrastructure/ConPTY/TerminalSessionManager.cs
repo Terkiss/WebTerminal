@@ -78,6 +78,16 @@ public class TerminalSessionManager : ITerminalSessionManager
         return Result<int>.Success(count);
     }
 
+    public IReadOnlyList<TerminalSession> GetAllSessions()
+    {
+        return _sessions.Values.ToList().AsReadOnly();
+    }
+
+    public IReadOnlyList<TerminalSession> GetSessionsForUser(Guid userId)
+    {
+        return _sessions.Values.Where(s => s.OwnerUserId == userId).ToList().AsReadOnly();
+    }
+
     private async Task CleanupStaleSessionsAsync()
     {
         var gracePeriod = TimeSpan.FromSeconds(60);
