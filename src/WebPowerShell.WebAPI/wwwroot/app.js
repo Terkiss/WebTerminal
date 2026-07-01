@@ -180,7 +180,10 @@ async function startConnection() {
         updateConnectionBadge('connected', 'Connected');
         showToast('Secure terminal session authorized.', 'success');
         
-        // Open initial tab if none exists
+        // Check for restorable sessions from previous server run
+        await restorePersistedSessions();
+        
+        // If no sessions were restored, open a fresh tab
         if (state.tabs.size === 0) {
             await createNewTab();
             setTimeout(() => {
@@ -191,6 +194,60 @@ async function startConnection() {
         updateConnectionBadge('disconnected', 'Disconnected');
         showToast('Failed to connect to terminal service.', 'error');
         console.error(err);
+    }
+}
+
+// Restore persisted sessions from previous server run
+async function restorePersistedSessions() {
+    try {
+        const sessions = await state.connection.invoke("ListSessions");
+        if (!sessions || sessions.length === 0) return;
+        
+        // Filter for restorable (non-live) sessions
+        const restorable = sessions.filter(s => !s.isLive);
+        if (restorable.length === 0) return;
+        
+        showToast(`Restoring ${restorable.length} previous session(s)...`, 'info', 3000);
+        
+        let firstTabId = null;
+        for (let i = 0; i < restorable.length; i++) {
+            const s = restorable[i];
+            const tabId = s.sessionId;
+            const name = `Session ${i + 1}`;
+            
+            // Create Tab UI
+            const tab = new Tab(tabId, name);
+            state.tabs.set(tabId, tab);
+            tab.initializeDOM();
+            
+            // Show a restoration message in the terminal
+            if (!firstTabId) firstTabId = tabId;
+            
+            try {
+                // Activate tab so xterm.open() is called before output arrives
+                switchTab(tabId);
+                
+                const response = await state.connection.invoke("RestoreSession", tabId, s.workingDirectory);
+                if (response && response.success === false) {
+                    tab.terminal.write(`\r\n\x1b[31m[Session restoration failed: ${response.errorMessage || 'Unknown'}]\x1b[0m\r\n`);
+                } else {
+                    tab.terminal.write(`\x1b[36m[Session restored — ${s.workingDirectory}]\x1b[0m\r\n`);
+                }
+            } catch (e) {
+                console.error(`Failed to restore session ${tabId}:`, e);
+                tab.terminal.write(`\r\n\x1b[31m[Restore failed: ${e.message}]\x1b[0m\r\n`);
+            }
+        }
+        
+        // Switch to the first restored tab
+        if (firstTabId) {
+            switchTab(firstTabId);
+        }
+        
+        showToast(`${restorable.length} session(s) restored successfully.`, 'success');
+    } catch (e) {
+        console.error('Failed to restore persisted sessions:', e);
+        // Non-critical — fall through to create a new tab
     }
 }
 
