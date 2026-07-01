@@ -47,8 +47,15 @@ public class TerminalHub : Hub
 
         _logger.LogInformation(exception, "User {UserId} disconnected with connection ID {ConnectionId}", userIdString, connectionId);
 
-        // We DO NOT close sessions immediately. We just Detach them.
-        // TerminalSessionManager will clean them up after the Grace Period.
+        // Detach this specific connection from all sessions it was attached to.
+        // We DO NOT close sessions — TerminalSessionManager cleans up after grace period.
+        if (Guid.TryParse(userIdString, out var uid))
+        {
+            foreach (var session in _sessionManager.GetSessionsForUser(uid))
+            {
+                session.Detach(connectionId);
+            }
+        }
         
         await base.OnDisconnectedAsync(exception);
     }
@@ -73,15 +80,7 @@ public class TerminalHub : Hub
         
         var session = result.Value!;
         
-        session.OnOutput = async (byte[] chunk) => {
-            try { await _hubContext.Clients.Client(session.ConnectionId ?? "").SendAsync("TerminalOutput", tabId, chunk); }
-            catch (Exception ex) { _logger.LogWarning(ex, "Failed to send TerminalOutput"); }
-        };
-        
-        session.OnExited = async (int? exitCode) => {
-            try { await _hubContext.Clients.Client(session.ConnectionId ?? "").SendAsync("TerminalExited", tabId, exitCode); }
-            catch (Exception ex) { _logger.LogWarning(ex, "Failed to send TerminalExited"); }
-        };
+        SetupSessionCallbacks(session, tabId);
 
         // Automatically attach
         session.Attach(Context.ConnectionId);
@@ -113,7 +112,7 @@ public class TerminalHub : Hub
         var session = result.Value!;
         if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        session.Detach();
+        session.Detach(Context.ConnectionId);
         return HubResponse.Ok();
     }
 
@@ -227,19 +226,45 @@ public class TerminalHub : Hub
 
         var session = result.Value!;
 
-        session.OnOutput = async (byte[] chunk) => {
-            try { await _hubContext.Clients.Client(session.ConnectionId ?? "").SendAsync("TerminalOutput", tabId, chunk); }
-            catch (Exception ex) { _logger.LogWarning(ex, "Failed to send TerminalOutput"); }
-        };
-
-        session.OnExited = async (int? exitCode) => {
-            try { await _hubContext.Clients.Client(session.ConnectionId ?? "").SendAsync("TerminalExited", tabId, exitCode); }
-            catch (Exception ex) { _logger.LogWarning(ex, "Failed to send TerminalExited"); }
-        };
+        SetupSessionCallbacks(session, tabId);
 
         session.Attach(Context.ConnectionId);
         _logger.LogInformation("Restored session {TabId} at {WorkDir} for user {UserId}", tabId, workingDirectory, userId);
 
         return HubResponse.Ok();
+    }
+
+    /// <summary>
+    /// Wire up OnOutput and OnExited callbacks to broadcast to ALL connected clients (multi-device mirroring).
+    /// </summary>
+    private void SetupSessionCallbacks(TerminalSession session, Guid tabId)
+    {
+        session.OnOutput = async (byte[] chunk) =>
+        {
+            var connections = session.ConnectionIds;
+            if (connections.Count == 0) return;
+            try
+            {
+                await _hubContext.Clients.Clients(connections).SendAsync("TerminalOutput", tabId, chunk);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to broadcast TerminalOutput to {Count} clients", connections.Count);
+            }
+        };
+
+        session.OnExited = async (int? exitCode) =>
+        {
+            var connections = session.ConnectionIds;
+            if (connections.Count == 0) return;
+            try
+            {
+                await _hubContext.Clients.Clients(connections).SendAsync("TerminalExited", tabId, exitCode);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to broadcast TerminalExited");
+            }
+        };
     }
 }

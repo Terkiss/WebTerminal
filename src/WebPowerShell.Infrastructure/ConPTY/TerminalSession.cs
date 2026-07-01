@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
@@ -15,8 +17,54 @@ public sealed class TerminalSession : IAsyncDisposable
     
     public DateTimeOffset CreatedAt { get; }
     public DateTimeOffset LastActivityAt { get; set; }
-    public string? ConnectionId { get; set; }
     public string WorkingDirectory { get; private set; } = "";
+
+    /// <summary>
+    /// All SignalR connection IDs currently attached to this session (multi-device mirroring).
+    /// Thread-safe via lock.
+    /// </summary>
+    private readonly HashSet<string> _connectionIds = new();
+    private readonly object _connectionLock = new();
+
+    /// <summary>
+    /// Returns a snapshot of all currently attached connection IDs.
+    /// </summary>
+    public IReadOnlyList<string> ConnectionIds
+    {
+        get
+        {
+            lock (_connectionLock)
+            {
+                return _connectionIds.ToList().AsReadOnly();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns true if at least one client is attached.
+    /// </summary>
+    public bool HasConnections
+    {
+        get
+        {
+            lock (_connectionLock)
+            {
+                return _connectionIds.Count > 0;
+            }
+        }
+    }
+
+    // Kept for backward compatibility — returns the first connection or null
+    public string? ConnectionId
+    {
+        get
+        {
+            lock (_connectionLock)
+            {
+                return _connectionIds.Count > 0 ? _connectionIds.First() : null;
+            }
+        }
+    }
 
     private readonly Channel<byte[]> _inputChannel;
     private readonly CancellationTokenSource _cts = new();
@@ -55,15 +103,44 @@ public sealed class TerminalSession : IAsyncDisposable
         });
     }
 
+    /// <summary>
+    /// Attach a client connection to this session (multi-device support).
+    /// Multiple connections can be attached simultaneously for tmux-style mirroring.
+    /// </summary>
     public void Attach(string connectionId)
     {
-        ConnectionId = connectionId;
+        lock (_connectionLock)
+        {
+            _connectionIds.Add(connectionId);
+        }
         LastActivityAt = DateTimeOffset.UtcNow;
+        _logger.LogInformation("Session {SessionId}: attached connection {ConnectionId} (total: {Count})",
+            SessionId, connectionId, _connectionIds.Count);
     }
 
-    public void Detach()
+    /// <summary>
+    /// Detach a specific client connection from this session.
+    /// </summary>
+    public void Detach(string connectionId)
     {
-        ConnectionId = null;
+        lock (_connectionLock)
+        {
+            _connectionIds.Remove(connectionId);
+        }
+        LastActivityAt = DateTimeOffset.UtcNow;
+        _logger.LogInformation("Session {SessionId}: detached connection {ConnectionId} (remaining: {Count})",
+            SessionId, connectionId, _connectionIds.Count);
+    }
+
+    /// <summary>
+    /// Detach all connections (legacy behavior).
+    /// </summary>
+    public void DetachAll()
+    {
+        lock (_connectionLock)
+        {
+            _connectionIds.Clear();
+        }
         LastActivityAt = DateTimeOffset.UtcNow;
     }
 
@@ -101,7 +178,7 @@ public sealed class TerminalSession : IAsyncDisposable
         {
             await foreach (var chunk in Process.ReadOutputAsync(_cts.Token))
             {
-                if (OnOutput != null && ConnectionId != null)
+                if (OnOutput != null && HasConnections)
                 {
                     await OnOutput(chunk.ToArray());
                 }

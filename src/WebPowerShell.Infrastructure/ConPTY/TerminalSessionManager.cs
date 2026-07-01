@@ -100,7 +100,7 @@ public class TerminalSessionManager : ITerminalSessionManager
                 
                 var now = DateTimeOffset.UtcNow;
                 var staleSessions = _sessions.Values
-                    .Where(s => s.ConnectionId == null && (now - s.LastActivityAt) > gracePeriod)
+                    .Where(s => !s.HasConnections && (now - s.LastActivityAt) > gracePeriod)
                     .ToList();
 
                 foreach (var session in staleSessions)
