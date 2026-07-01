@@ -1,9 +1,12 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using TeruTeruPandas.Core;
 using TeruTeruPandas.Core.Column;
+using TeruTeruPandas.IO;
 using WebPowerShell.Application.Common.Interfaces;
 using WebPowerShell.Domain.Common;
 using WebPowerShell.Domain.Entities;
@@ -18,7 +21,14 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
     public class TeruTeruPandasUserRepository : IUserRepository
     {
         private readonly ReaderWriterLockSlim _lock = new();
+        private readonly ILogger<TeruTeruPandasUserRepository>? _logger;
         private DataFrame _users;
+        private volatile bool _isDirty;
+
+        /// <summary>
+        /// Indicates whether the in-memory data has been modified since the last persistence.
+        /// </summary>
+        public bool IsDirty => _isDirty;
 
         // Column name constants
         private const string COL_ID = "Id";
@@ -39,11 +49,9 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
             COL_FAILED_LOGIN, COL_LOCKED_UNTIL, COL_IS_ADMIN
         };
 
-        public TeruTeruPandasUserRepository()
+        public TeruTeruPandasUserRepository(ILogger<TeruTeruPandasUserRepository>? logger = null)
         {
-            // Initialize empty Users DataFrame with typed columns (1 dummy row then slice to 0)
-            // TeruTeruPandas requires at least 1 column with matching lengths.
-            // We start with a single "seed" row that we'll never match, or build on first Save.
+            _logger = logger;
             _users = BuildEmptyDataFrame();
         }
 
@@ -165,6 +173,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                     _users = new DataFrame(newColumns);
                 }
 
+                _isDirty = true;
                 return Task.FromResult(Result<bool>.Success(true));
             }
             catch (Exception ex)
@@ -199,23 +208,141 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
 
         /// <summary>
         /// Build a DataFrame with 0 rows but all required columns.
-        /// TeruTeruPandas requires at least 1 column; we create 1-element arrays then use them
-        /// as a base for append operations.
         /// </summary>
         private static DataFrame BuildEmptyDataFrame()
         {
-            // Create a "sentinel" row that will be used as the initial empty state.
-            // We use a 1-row DataFrame and will just skip this row during lookups
-            // by checking for the sentinel Id value.
-            // Actually, let's use a simpler approach: start with a 1-element DF as a template.
             var columns = new Dictionary<string, IColumn>();
             foreach (var colName in AllColumns)
             {
                 columns[colName] = new StringColumn(new string?[] { "__SENTINEL__" });
             }
-            // Build with 1 sentinel row. When first real user is saved,
-            // we rebuild without the sentinel.
             return new DataFrame(columns);
         }
+
+        /// <summary>
+        /// Persist the current in-memory DataFrame to a SQLite database file.
+        /// Called by MemoryPersistenceService on a 120-second interval.
+        /// </summary>
+        public void PersistToSqlite(string dbPath)
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                // Only persist real user rows (skip sentinel)
+                var realRowCount = 0;
+                for (int i = 0; i < _users.RowCount; i++)
+                {
+                    if (_users[i, COL_ID]?.ToString() != "__SENTINEL__")
+                        realRowCount++;
+                }
+
+                if (realRowCount == 0)
+                {
+                    _logger?.LogInformation("[MemoryPersistence] No real user data to persist.");
+                    return;
+                }
+
+                // Build a clean DataFrame without sentinel rows
+                var cleanColumns = new Dictionary<string, IColumn>();
+                foreach (var colName in AllColumns)
+                {
+                    var values = new string?[realRowCount];
+                    int idx = 0;
+                    for (int i = 0; i < _users.RowCount; i++)
+                    {
+                        if (_users[i, COL_ID]?.ToString() != "__SENTINEL__")
+                        {
+                            values[idx++] = _users[i, colName]?.ToString() ?? "";
+                        }
+                    }
+                    cleanColumns[colName] = new StringColumn(values);
+                }
+                var cleanDf = new DataFrame(cleanColumns);
+
+                var dir = Path.GetDirectoryName(dbPath)!;
+                if (!Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+
+                var connStr = $"Data Source={dbPath}";
+                SqliteIO.ToSqlite(cleanDf, connStr, "users", ifExists: true);
+
+                _isDirty = false;
+                _logger?.LogInformation("[MemoryPersistence] Persisted {Count} users to {Path}", realRowCount, dbPath);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "[MemoryPersistence] Failed to persist to SQLite");
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+        }
+
+        /// <summary>
+        /// Load user data from a SQLite database file into the in-memory DataFrame.
+        /// Called once on application startup.
+        /// </summary>
+        public void LoadFromSqlite(string dbPath)
+        {
+            if (!File.Exists(dbPath))
+            {
+                _logger?.LogInformation("[MemoryPersistence] No existing DB found at {Path}, starting fresh.", dbPath);
+                return;
+            }
+
+            _lock.EnterWriteLock();
+            try
+            {
+                var tables = SqliteIO.GetTableNames(dbPath);
+                if (!tables.Contains("users"))
+                {
+                    _logger?.LogWarning("[MemoryPersistence] DB exists but no 'users' table found.");
+                    return;
+                }
+
+                var loaded = SqliteIO.ReadSqliteTable(dbPath, "users");
+                if (loaded.RowCount > 0)
+                {
+                    // Rebuild as StringColumn-based DataFrame for consistency
+                    var columns = new Dictionary<string, IColumn>();
+                    foreach (var colName in AllColumns)
+                    {
+                        if (loaded.Columns.Contains(colName))
+                        {
+                            var values = new string?[loaded.RowCount];
+                            for (int i = 0; i < loaded.RowCount; i++)
+                            {
+                                values[i] = loaded[i, colName]?.ToString() ?? "";
+                            }
+                            columns[colName] = new StringColumn(values);
+                        }
+                        else
+                        {
+                            // Column missing in DB, fill with defaults
+                            var values = new string?[loaded.RowCount];
+                            Array.Fill(values, "");
+                            columns[colName] = new StringColumn(values);
+                        }
+                    }
+                    _users = new DataFrame(columns);
+                    _isDirty = false;
+                    _logger?.LogInformation("[MemoryPersistence] Loaded {Count} users from {Path}", loaded.RowCount, dbPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "[MemoryPersistence] Failed to load from SQLite");
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        /// <summary>
+        /// Clear the dirty flag after a successful persistence.
+        /// </summary>
+        public void ClearDirtyFlag() => _isDirty = false;
     }
 }
