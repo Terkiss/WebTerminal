@@ -467,9 +467,11 @@ body {
 }
 
 .terminal-containers-wrapper {
-    position: relative;
-    width: 100%;
-    height: 100%;
+    position: absolute;
+    top: 16px;
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
 }
 
 .terminal-container-el {
@@ -710,14 +712,10 @@ body {
 
 /* xterm custom theme integration styling override */
 .terminal-container-el .xterm {
-    width: 100%;
-    height: 100%;
-    padding: 10px;
+    /* Let xterm.js handle its own dimensions */
 }
 .xterm-viewport {
     background-color: var(--bg-terminal) !important;
-    width: 100% !important;
-    height: 100% !important;
 }
 .xterm-screen {
     font-family: var(--font-mono);
