@@ -48,10 +48,11 @@ public class TerminalHub : Hub
     {
         if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        // Launch cmd.exe with UTF-8 codepage so xterm.js renders CJK characters correctly
+        // Launch powershell.exe natively. ConPTY will automatically translate output to UTF-8.
+        // We avoid 'chcp 65001' because it breaks East Asian Character width calculation in ConPTY.
         var options = new TerminalLaunchOptions(
-            Executable: "cmd.exe",
-            Arguments: "/k chcp 65001 >nul",
+            Executable: "powershell.exe",
+            Arguments: "-NoLogo",
             WorkingDirectory: Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             Environment: null,
             Columns: 80,
