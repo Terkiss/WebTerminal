@@ -20,6 +20,16 @@ public sealed class TerminalSession : IAsyncDisposable
     public string WorkingDirectory { get; private set; } = "";
 
     /// <summary>
+    /// Scrollback buffer: captures all terminal output for replay on device attach/restore.
+    /// Max 256KB to prevent unbounded memory growth.
+    /// </summary>
+    private const int MaxScrollbackBytes = 256 * 1024;
+    private readonly object _scrollbackLock = new();
+    private byte[] _scrollbackBuffer = new byte[MaxScrollbackBytes];
+    private int _scrollbackLength = 0;
+    private bool _scrollbackWrapped = false;
+
+    /// <summary>
     /// All SignalR connection IDs currently attached to this session (multi-device mirroring).
     /// Thread-safe via lock.
     /// </summary>
@@ -178,9 +188,14 @@ public sealed class TerminalSession : IAsyncDisposable
         {
             await foreach (var chunk in Process.ReadOutputAsync(_cts.Token))
             {
+                var data = chunk.ToArray();
+
+                // Always capture output to scrollback buffer (even if no clients connected)
+                AppendToScrollback(data);
+
                 if (OnOutput != null && HasConnections)
                 {
-                    await OnOutput(chunk.ToArray());
+                    await OnOutput(data);
                 }
             }
         }
@@ -195,6 +210,71 @@ public sealed class TerminalSession : IAsyncDisposable
             {
                 await OnExited(Process.ExitCode);
             }
+        }
+    }
+
+    /// <summary>
+    /// Append output data to the circular scrollback buffer.
+    /// </summary>
+    private void AppendToScrollback(byte[] data)
+    {
+        lock (_scrollbackLock)
+        {
+            if (data.Length >= MaxScrollbackBytes)
+            {
+                // Data is larger than buffer — keep only the last MaxScrollbackBytes
+                Array.Copy(data, data.Length - MaxScrollbackBytes, _scrollbackBuffer, 0, MaxScrollbackBytes);
+                _scrollbackLength = MaxScrollbackBytes;
+                _scrollbackWrapped = true;
+                return;
+            }
+
+            var spaceRemaining = MaxScrollbackBytes - _scrollbackLength;
+            if (data.Length <= spaceRemaining)
+            {
+                // Fits in remaining space
+                Array.Copy(data, 0, _scrollbackBuffer, _scrollbackLength, data.Length);
+                _scrollbackLength += data.Length;
+            }
+            else
+            {
+                // Shift left and append at end (ring-style)
+                var shiftBy = data.Length - spaceRemaining;
+                Array.Copy(_scrollbackBuffer, shiftBy, _scrollbackBuffer, 0, _scrollbackLength - shiftBy);
+                _scrollbackLength -= shiftBy;
+                Array.Copy(data, 0, _scrollbackBuffer, _scrollbackLength, data.Length);
+                _scrollbackLength += data.Length;
+                _scrollbackWrapped = true;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get a snapshot of the scrollback buffer for replay to a newly attached client.
+    /// </summary>
+    public byte[] GetScrollbackSnapshot()
+    {
+        lock (_scrollbackLock)
+        {
+            var result = new byte[_scrollbackLength];
+            Array.Copy(_scrollbackBuffer, 0, result, 0, _scrollbackLength);
+            return result;
+        }
+    }
+
+    /// <summary>
+    /// Load scrollback buffer from persisted data (called on session restore).
+    /// </summary>
+    public void LoadScrollback(byte[] data)
+    {
+        lock (_scrollbackLock)
+        {
+            var len = Math.Min(data.Length, MaxScrollbackBytes);
+            if (len > 0)
+            {
+                Array.Copy(data, data.Length - len, _scrollbackBuffer, 0, len);
+            }
+            _scrollbackLength = len;
         }
     }
 

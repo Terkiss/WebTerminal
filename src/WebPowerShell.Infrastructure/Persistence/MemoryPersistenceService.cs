@@ -123,14 +123,16 @@ namespace WebPowerShell.Infrastructure.Persistence
                 var sessions = _sessionManager.GetAllSessions();
                 if (sessions.Count == 0)
                 {
-                    // Delete sessions table if no live sessions
+                    // Delete sessions + scrollback tables if no live sessions
                     if (File.Exists(_dbPath))
                     {
                         var connStr = $"Data Source={_dbPath}";
                         using var conn = new Microsoft.Data.Sqlite.SqliteConnection(connStr);
                         conn.Open();
-                        using var cmd = new Microsoft.Data.Sqlite.SqliteCommand("DROP TABLE IF EXISTS sessions", conn);
-                        cmd.ExecuteNonQuery();
+                        using (var cmd = new Microsoft.Data.Sqlite.SqliteCommand("DROP TABLE IF EXISTS sessions", conn))
+                            cmd.ExecuteNonQuery();
+                        using (var cmd2 = new Microsoft.Data.Sqlite.SqliteCommand("DROP TABLE IF EXISTS session_scrollback", conn))
+                            cmd2.ExecuteNonQuery();
                     }
                     _logger.LogDebug("[MemoryPersistence] No live sessions to persist.");
                     return;
@@ -166,11 +168,52 @@ namespace WebPowerShell.Infrastructure.Persistence
                 var connString = $"Data Source={_dbPath}";
                 SqliteIO.ToSqlite(df, connString, "sessions", ifExists: true);
 
+                // Persist scrollback buffers to a separate BLOB table (direct SQLite, not TeruTeruPandas)
+                PersistScrollbacks(sessions);
+
                 _logger.LogInformation("[MemoryPersistence] Persisted {Count} session records.", sessions.Count);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[MemoryPersistence] Failed to persist sessions");
+            }
+        }
+
+        /// <summary>
+        /// Persist scrollback buffers for all live sessions as BLOBs.
+        /// </summary>
+        private void PersistScrollbacks(IReadOnlyList<TerminalSession> sessions)
+        {
+            try
+            {
+                var connStr = $"Data Source={_dbPath}";
+                using var conn = new Microsoft.Data.Sqlite.SqliteConnection(connStr);
+                conn.Open();
+
+                // Create table if not exists
+                using (var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
+                    "CREATE TABLE IF NOT EXISTS session_scrollback (SessionId TEXT PRIMARY KEY, Buffer BLOB)", conn))
+                    cmd.ExecuteNonQuery();
+
+                // Clear and reinsert
+                using (var cmd = new Microsoft.Data.Sqlite.SqliteCommand("DELETE FROM session_scrollback", conn))
+                    cmd.ExecuteNonQuery();
+
+                foreach (var session in sessions)
+                {
+                    var buffer = session.GetScrollbackSnapshot();
+                    if (buffer.Length == 0) continue;
+
+                    using var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
+                        "INSERT INTO session_scrollback (SessionId, Buffer) VALUES (@sid, @buf)", conn);
+                    cmd.Parameters.AddWithValue("@sid", session.SessionId.ToString());
+                    cmd.Parameters.AddWithValue("@buf", buffer);
+                    cmd.ExecuteNonQuery();
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[MemoryPersistence] Failed to persist scrollback buffers");
             }
         }
 
@@ -214,6 +257,47 @@ namespace WebPowerShell.Infrastructure.Persistence
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// Load a specific session's scrollback buffer from the persisted SQLite database.
+        /// Returns null if not found.
+        /// </summary>
+        public byte[]? GetPersistedScrollback(Guid sessionId)
+        {
+            if (!File.Exists(_dbPath)) return null;
+
+            try
+            {
+                var connStr = $"Data Source={_dbPath}";
+                using var conn = new Microsoft.Data.Sqlite.SqliteConnection(connStr);
+                conn.Open();
+
+                // Check if table exists
+                using (var checkCmd = new Microsoft.Data.Sqlite.SqliteCommand(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='session_scrollback'", conn))
+                {
+                    if (checkCmd.ExecuteScalar() == null) return null;
+                }
+
+                using var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
+                    "SELECT Buffer FROM session_scrollback WHERE SessionId = @sid", conn);
+                cmd.Parameters.AddWithValue("@sid", sessionId.ToString());
+
+                var result = cmd.ExecuteScalar();
+                if (result is byte[] buffer)
+                {
+                    _logger.LogInformation("[MemoryPersistence] Loaded scrollback for session {SessionId} ({Bytes}b)",
+                        sessionId, buffer.Length);
+                    return buffer;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[MemoryPersistence] Failed to load scrollback for session {SessionId}", sessionId);
+            }
+
+            return null;
         }
     }
 }

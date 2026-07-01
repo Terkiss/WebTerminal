@@ -99,6 +99,21 @@ public class TerminalHub : Hub
         if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
 
         session.Attach(Context.ConnectionId);
+
+        // Replay scrollback buffer to the newly attached client so they see previous output
+        var scrollback = session.GetScrollbackSnapshot();
+        if (scrollback.Length > 0)
+        {
+            try
+            {
+                await Clients.Caller.SendAsync("TerminalOutput", tabId, scrollback);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to send scrollback to client");
+            }
+        }
+
         return HubResponse.Ok();
     }
     
@@ -228,8 +243,31 @@ public class TerminalHub : Hub
 
         SetupSessionCallbacks(session, tabId);
 
+        // Load persisted scrollback buffer from previous server run
+        var persistedScrollback = _persistenceService.GetPersistedScrollback(tabId);
+        if (persistedScrollback != null && persistedScrollback.Length > 0)
+        {
+            session.LoadScrollback(persistedScrollback);
+        }
+
         session.Attach(Context.ConnectionId);
-        _logger.LogInformation("Restored session {TabId} at {WorkDir} for user {UserId}", tabId, workingDirectory, userId);
+
+        // Replay scrollback to the restoring client
+        var scrollback = session.GetScrollbackSnapshot();
+        if (scrollback.Length > 0)
+        {
+            try
+            {
+                await Clients.Caller.SendAsync("TerminalOutput", tabId, scrollback);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to send scrollback on restore");
+            }
+        }
+
+        _logger.LogInformation("Restored session {TabId} at {WorkDir} for user {UserId} (scrollback: {Bytes}b)",
+            tabId, workingDirectory, userId, scrollback.Length);
 
         return HubResponse.Ok();
     }
