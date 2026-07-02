@@ -359,6 +359,10 @@ class Tab {
                 white: '#f8fafc'
             }
         });
+
+        // Load FitAddon
+        this.fitAddon = new FitAddon.FitAddon();
+        this.terminal.loadAddon(this.fitAddon);
         
         // Handle User Input directly piped to PTY
         this.terminal.onData(async (data) => {
@@ -400,16 +404,11 @@ class Tab {
     }
     
     fit() {
-        if (!this.domElement) return;
-        const width = this.domElement.clientWidth;
-        const height = this.domElement.clientHeight;
-        
-        // standard font calculations
-        const cols = Math.max(40, Math.floor((width - 24) / 8.5));
-        const rows = Math.max(10, Math.floor((height - 24) / 18));
-        
-        if (cols > 0 && rows > 0) {
-            this.terminal.resize(cols, rows);
+        if (!this.domElement || !this.isOpened) return;
+        try {
+            this.fitAddon.fit();
+        } catch (e) {
+            console.warn("FitAddon error:", e);
         }
     }
     
@@ -430,9 +429,6 @@ class Tab {
             // Delay fitting to ensure DOM reflow has completed and container size is accurate
             setTimeout(() => {
                 this.fit();
-                if (this.terminal) {
-                    this.terminal.refresh(0, this.terminal.rows - 1);
-                }
             }, 60);
         } else {
             this.tabItemEl.classList.remove('active');
@@ -859,4 +855,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    // Handle global window resize
+    window.addEventListener('resize', () => {
+        if (state.activeTabId) {
+            const tab = state.tabs.get(state.activeTabId);
+            if (tab) tab.fit();
+        }
+    });
 });

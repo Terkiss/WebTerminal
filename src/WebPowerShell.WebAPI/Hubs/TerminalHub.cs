@@ -68,7 +68,7 @@ public class TerminalHub : Hub
         // We avoid 'chcp 65001' because it breaks East Asian Character width calculation in ConPTY.
         var options = new TerminalLaunchOptions(
             Executable: "powershell.exe",
-            Arguments: "-NoLogo",
+            Arguments: "-NoLogo -NoExit -Command \"[console]::InputEncoding=[console]::OutputEncoding=[System.Text.Encoding]::UTF8\"",
             WorkingDirectory: Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             Environment: null,
             Columns: 80,
@@ -229,7 +229,7 @@ public class TerminalHub : Hub
 
         var options = new TerminalLaunchOptions(
             Executable: "powershell.exe",
-            Arguments: "-NoLogo",
+            Arguments: "-NoLogo -NoExit -Command \"[console]::InputEncoding=[console]::OutputEncoding=[System.Text.Encoding]::UTF8\"",
             WorkingDirectory: workingDirectory,
             Environment: null,
             Columns: 80,

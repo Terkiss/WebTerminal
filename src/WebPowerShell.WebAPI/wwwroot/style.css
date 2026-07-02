@@ -752,38 +752,65 @@ body {
 @media (max-width: 768px) {
     .app-container {
         grid-template-columns: 1fr;
+        padding-bottom: 70px; /* Space for bottom nav */
     }
+    
     .btn-toggle-sidebar {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid var(--border-color);
-        color: var(--text-primary);
-        width: 38px;
-        height: 38px;
-        border-radius: var(--radius-md);
-        font-size: 16px;
-        cursor: pointer;
-        transition: var(--transition-smooth);
-        margin-right: 12px;
+        display: none !important; /* Hide hamburger menu */
     }
-    .btn-toggle-sidebar:hover {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: var(--border-hover);
-    }
+    
     .sidebar {
         position: fixed;
-        top: 0;
-        left: -280px;
-        width: 280px;
-        height: 100vh;
-        z-index: 999;
-        transition: var(--transition-smooth);
-        background: rgba(10, 15, 30, 0.95);
-        box-shadow: 10px 0 30px rgba(0, 0, 0, 0.5);
-    }
-    .sidebar.active {
+        bottom: 0;
         left: 0;
+        width: 100%;
+        height: 70px;
+        flex-direction: row;
+        border-right: none;
+        border-top: 1px solid var(--border-color);
+        padding: 0;
+        background: rgba(10, 15, 30, 0.95);
+        backdrop-filter: var(--glass-blur);
+        z-index: 1000;
+        align-items: center;
+    }
+
+    /* Hide sidebar elements that aren't tabs on mobile */
+    .sidebar-header, .user-profile-card {
+        display: none;
+    }
+
+    /* Make tab list horizontal and scrollable */
+    .tab-list {
+        flex-direction: row;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 0 12px;
+        gap: 8px;
+        width: 100%;
+        align-items: center;
+        margin-top: 0;
+        /* Hide scrollbar */
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+    .tab-list::-webkit-scrollbar {
+        display: none;
+    }
+
+    .tab-item {
+        flex: 0 0 auto;
+        width: 120px;
+        margin-bottom: 0;
+        padding: 10px;
+        justify-content: center;
+    }
+
+    .tab-name {
+        font-size: 12px;
+    }
+    
+    .tab-close {
+        padding: 4px;
     }
 }
