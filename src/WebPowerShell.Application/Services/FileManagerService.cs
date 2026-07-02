@@ -43,6 +43,24 @@ namespace WebPowerShell.Application.Services
             var combined = Path.Combine(_basePath, relativePath.TrimStart('/', '\\'));
             var fullPath = Path.GetFullPath(combined);
 
+            try
+            {
+                if (File.Exists(fullPath))
+                {
+                    var target = new FileInfo(fullPath).ResolveLinkTarget(true);
+                    if (target != null) fullPath = target.FullName;
+                }
+                else if (Directory.Exists(fullPath))
+                {
+                    var target = new DirectoryInfo(fullPath).ResolveLinkTarget(true);
+                    if (target != null) fullPath = target.FullName;
+                }
+            }
+            catch
+            {
+                // Ignore resolution errors
+            }
+
             if (!fullPath.StartsWith(basePathWithSeparator, StringComparison.OrdinalIgnoreCase) && 
                 !fullPath.Equals(_basePath, StringComparison.OrdinalIgnoreCase))
             {
@@ -150,6 +168,16 @@ namespace WebPowerShell.Application.Services
 
             var targetFile = Path.Combine(targetDir, sanitizedFileName);
             var safeTargetFile = Path.GetFullPath(targetFile);
+
+            try
+            {
+                if (File.Exists(safeTargetFile))
+                {
+                    var target = new FileInfo(safeTargetFile).ResolveLinkTarget(true);
+                    if (target != null) safeTargetFile = target.FullName;
+                }
+            }
+            catch {}
 
             string basePathWithSeparator = _basePath.EndsWith(Path.DirectorySeparatorChar.ToString()) 
                 ? _basePath 

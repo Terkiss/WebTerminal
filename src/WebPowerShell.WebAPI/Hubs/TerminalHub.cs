@@ -227,6 +227,12 @@ public class TerminalHub : Hub
     {
         if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
+        var persistedSession = _persistenceService.GetPersistedSessions().FirstOrDefault(p => p.SessionId == tabId);
+        if (persistedSession.SessionId == Guid.Empty || persistedSession.OwnerUserId != userId)
+        {
+            return HubResponse.Fail(AppFailure.Unauthorized);
+        }
+
         var options = new TerminalLaunchOptions(
             Executable: "powershell.exe",
             Arguments: "-NoLogo -NoExit -Command \"[console]::InputEncoding=[console]::OutputEncoding=[System.Text.Encoding]::UTF8\"",

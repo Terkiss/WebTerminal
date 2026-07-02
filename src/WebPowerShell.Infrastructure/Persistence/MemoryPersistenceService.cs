@@ -199,17 +199,19 @@ namespace WebPowerShell.Infrastructure.Persistence
                 using (var cmd = new Microsoft.Data.Sqlite.SqliteCommand("DELETE FROM session_scrollback", conn))
                     cmd.ExecuteNonQuery();
 
+                using var txn = conn.BeginTransaction();
                 foreach (var session in sessions)
                 {
                     var buffer = session.GetScrollbackSnapshot();
                     if (buffer.Length == 0) continue;
 
                     using var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
-                        "INSERT INTO session_scrollback (SessionId, Buffer) VALUES (@sid, @buf)", conn);
+                        "INSERT INTO session_scrollback (SessionId, Buffer) VALUES (@sid, @buf)", conn, txn);
                     cmd.Parameters.AddWithValue("@sid", session.SessionId.ToString());
                     cmd.Parameters.AddWithValue("@buf", buffer);
                     cmd.ExecuteNonQuery();
                 }
+                txn.Commit();
             }
             catch (Exception ex)
             {

@@ -307,11 +307,13 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
         /// </summary>
         public void PersistToSqlite(string dbPath)
         {
+            DataFrame? cleanDf = null;
+            int realRowCount = 0;
+
             _lock.EnterReadLock();
             try
             {
                 // Only persist real user rows (skip sentinel)
-                var realRowCount = 0;
                 for (int i = 0; i < _users.RowCount; i++)
                 {
                     if (_users[i, COL_ID]?.ToString() != "__SENTINEL__")
@@ -339,25 +341,31 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                     }
                     cleanColumns[colName] = new StringColumn(values);
                 }
-                var cleanDf = new DataFrame(cleanColumns);
-
-                var dir = Path.GetDirectoryName(dbPath)!;
-                if (!Directory.Exists(dir))
-                    Directory.CreateDirectory(dir);
-
-                var connStr = $"Data Source={dbPath}";
-                SqliteIO.ToSqlite(cleanDf, connStr, "users", ifExists: true);
-
-                _isDirty = false;
-                _logger?.LogInformation("[MemoryPersistence] Persisted {Count} users to {Path}", realRowCount, dbPath);
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogError(ex, "[MemoryPersistence] Failed to persist to SQLite");
+                cleanDf = new DataFrame(cleanColumns);
             }
             finally
             {
                 _lock.ExitReadLock();
+            }
+
+            try
+            {
+                if (cleanDf != null)
+                {
+                    var dir = Path.GetDirectoryName(dbPath)!;
+                    if (!Directory.Exists(dir))
+                        Directory.CreateDirectory(dir);
+
+                    var connStr = $"Data Source={dbPath}";
+                    SqliteIO.ToSqlite(cleanDf, connStr, "users", ifExists: true);
+
+                    _isDirty = false;
+                    _logger?.LogInformation("[MemoryPersistence] Persisted {Count} users to {Path}", realRowCount, dbPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "[MemoryPersistence] Failed to persist to SQLite");
             }
         }
 

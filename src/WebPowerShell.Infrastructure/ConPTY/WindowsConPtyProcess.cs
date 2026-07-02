@@ -9,7 +9,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace WebPowerShell.Infrastructure.ConPTY;
 
-public class WindowsConPtyProcess : ITerminalProcess
+public class WindowsConPtyProcess : ITerminalProcess, IDisposable
 {
     private IntPtr _hPC = IntPtr.Zero;
     private ConPtyNative.PROCESS_INFORMATION _pi;
@@ -22,6 +22,50 @@ public class WindowsConPtyProcess : ITerminalProcess
     private FileStream? _stdoutStream;
 
     private bool _disposed;
+
+    ~WindowsConPtyProcess()
+    {
+        Dispose(false);
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        if (disposing)
+        {
+            _stdinStream?.Dispose();
+            _stdoutStream?.Dispose();
+            _hStdInWrite?.Dispose();
+            _hStdOutRead?.Dispose();
+        }
+
+        if (_hJob != IntPtr.Zero)
+        {
+            ConPtyNative.CloseHandle(_hJob);
+            _hJob = IntPtr.Zero;
+        }
+
+        if (_pi.hProcess != IntPtr.Zero)
+        {
+            ConPtyNative.CloseHandle(_pi.hProcess);
+            ConPtyNative.CloseHandle(_pi.hThread);
+            _pi.hProcess = IntPtr.Zero;
+        }
+
+        if (_hPC != IntPtr.Zero)
+        {
+            ConPtyNative.ClosePseudoConsole(_hPC);
+            _hPC = IntPtr.Zero;
+        }
+    }
 
     public bool HasExited
     {
@@ -64,81 +108,99 @@ public class WindowsConPtyProcess : ITerminalProcess
             throw new Exception("CreatePipe (stdin) failed");
 
         if (!ConPtyNative.CreatePipe(out IntPtr hStdOutReadRaw, out IntPtr hStdOutWrite, ref sa, 0))
-            throw new Exception("CreatePipe (stdout) failed");
-
-        var size = new ConPtyNative.COORD { X = (short)options.Columns, Y = (short)options.Rows };
-        int result = ConPtyNative.CreatePseudoConsole(size, hStdInRead, hStdOutWrite, 0, out _hPC);
-        if (result != 0)
         {
-            throw new Exception($"CreatePseudoConsole failed with HRESULT {result:X}");
+            ConPtyNative.CloseHandle(hStdInRead);
+            ConPtyNative.CloseHandle(hStdInWriteRaw);
+            throw new Exception("CreatePipe (stdout) failed");
         }
-
-        // Close handles we don't need on our side
-        ConPtyNative.CloseHandle(hStdInRead);
-        ConPtyNative.CloseHandle(hStdOutWrite);
-
-        IntPtr lpSize = IntPtr.Zero;
-        ConPtyNative.InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref lpSize);
-        IntPtr attributeList = Marshal.AllocHGlobal(lpSize);
 
         try
         {
-            if (!ConPtyNative.InitializeProcThreadAttributeList(attributeList, 1, 0, ref lpSize))
-                throw new Exception("InitializeProcThreadAttributeList failed");
-
-            if (!ConPtyNative.UpdateProcThreadAttribute(
-                attributeList,
-                0,
-                (IntPtr)ConPtyNative.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                _hPC,
-                (IntPtr)IntPtr.Size,
-                IntPtr.Zero,
-                IntPtr.Zero))
+            var size = new ConPtyNative.COORD { X = (short)options.Columns, Y = (short)options.Rows };
+            int result = ConPtyNative.CreatePseudoConsole(size, hStdInRead, hStdOutWrite, 0, out _hPC);
+            if (result != 0)
             {
-                throw new Exception("UpdateProcThreadAttribute failed");
+                throw new Exception($"CreatePseudoConsole failed with HRESULT {result:X}");
             }
 
-            var siex = new ConPtyNative.STARTUPINFOEX();
-            siex.StartupInfo.cb = Marshal.SizeOf<ConPtyNative.STARTUPINFOEX>();
-            siex.lpAttributeList = attributeList;
+            // Close handles we don't need on our side
+            ConPtyNative.CloseHandle(hStdInRead);
+            hStdInRead = IntPtr.Zero;
+            ConPtyNative.CloseHandle(hStdOutWrite);
+            hStdOutWrite = IntPtr.Zero;
 
-            string cmdLine = string.IsNullOrEmpty(options.Arguments) 
-                ? options.Executable 
-                : $"{options.Executable} {options.Arguments}";
+            IntPtr lpSize = IntPtr.Zero;
+            ConPtyNative.InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref lpSize);
+            IntPtr attributeList = Marshal.AllocHGlobal(lpSize);
 
-            bool success = ConPtyNative.CreateProcess(
-                null,
-                cmdLine,
-                IntPtr.Zero,
-                IntPtr.Zero,
-                false,
-                ConPtyNative.EXTENDED_STARTUPINFO_PRESENT,
-                IntPtr.Zero, // Environment not explicitly handled in this minimal implementation yet
-                options.WorkingDirectory,
-                ref siex,
-                out _pi);
-
-            if (!success)
+            try
             {
-                throw new Exception($"CreateProcess failed with error code {Marshal.GetLastWin32Error()}");
-            }
+                if (!ConPtyNative.InitializeProcThreadAttributeList(attributeList, 1, 0, ref lpSize))
+                    throw new Exception("InitializeProcThreadAttributeList failed");
 
-            // Assign to Job Object so the process tree dies when the job is closed
-            if (_hJob != IntPtr.Zero)
+                if (!ConPtyNative.UpdateProcThreadAttribute(
+                    attributeList,
+                    0,
+                    (IntPtr)ConPtyNative.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                    _hPC,
+                    (IntPtr)IntPtr.Size,
+                    IntPtr.Zero,
+                    IntPtr.Zero))
+                {
+                    throw new Exception("UpdateProcThreadAttribute failed");
+                }
+
+                var siex = new ConPtyNative.STARTUPINFOEX();
+                siex.StartupInfo.cb = Marshal.SizeOf<ConPtyNative.STARTUPINFOEX>();
+                siex.lpAttributeList = attributeList;
+
+                string cmdLine = string.IsNullOrEmpty(options.Arguments) 
+                    ? options.Executable 
+                    : $"{options.Executable} {options.Arguments}";
+
+                bool success = ConPtyNative.CreateProcess(
+                    null,
+                    cmdLine,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    false,
+                    ConPtyNative.EXTENDED_STARTUPINFO_PRESENT,
+                    IntPtr.Zero, // Environment not explicitly handled in this minimal implementation yet
+                    options.WorkingDirectory,
+                    ref siex,
+                    out _pi);
+
+                if (!success)
+                {
+                    throw new Exception($"CreateProcess failed with error code {Marshal.GetLastWin32Error()}");
+                }
+
+                // Assign to Job Object so the process tree dies when the job is closed
+                if (_hJob != IntPtr.Zero)
+                {
+                    ConPtyNative.AssignProcessToJobObject(_hJob, _pi.hProcess);
+                }
+
+                _hStdInWrite = new SafeFileHandle(hStdInWriteRaw, true);
+                hStdInWriteRaw = IntPtr.Zero;
+                _hStdOutRead = new SafeFileHandle(hStdOutReadRaw, true);
+                hStdOutReadRaw = IntPtr.Zero;
+
+                _stdinStream = new FileStream(_hStdInWrite, FileAccess.Write, 4096, false);
+                _stdoutStream = new FileStream(_hStdOutRead, FileAccess.Read, 4096, false);
+            }
+            finally
             {
-                ConPtyNative.AssignProcessToJobObject(_hJob, _pi.hProcess);
+                ConPtyNative.DeleteProcThreadAttributeList(attributeList);
+                Marshal.FreeHGlobal(attributeList);
             }
-
-            _hStdInWrite = new SafeFileHandle(hStdInWriteRaw, true);
-            _hStdOutRead = new SafeFileHandle(hStdOutReadRaw, true);
-
-            _stdinStream = new FileStream(_hStdInWrite, FileAccess.Write, 4096, false);
-            _stdoutStream = new FileStream(_hStdOutRead, FileAccess.Read, 4096, false);
         }
         finally
         {
-            ConPtyNative.DeleteProcThreadAttributeList(attributeList);
-            Marshal.FreeHGlobal(attributeList);
+            if (hStdInRead != IntPtr.Zero) ConPtyNative.CloseHandle(hStdInRead);
+            if (hStdOutWrite != IntPtr.Zero) ConPtyNative.CloseHandle(hStdOutWrite);
+            if (hStdInWriteRaw != IntPtr.Zero) ConPtyNative.CloseHandle(hStdInWriteRaw);
+            if (hStdOutReadRaw != IntPtr.Zero) ConPtyNative.CloseHandle(hStdOutReadRaw);
         }
         
         return Task.CompletedTask;
@@ -212,31 +274,11 @@ public class WindowsConPtyProcess : ITerminalProcess
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
-        _disposed = true;
 
         if (_stdinStream != null) await _stdinStream.DisposeAsync();
         if (_stdoutStream != null) await _stdoutStream.DisposeAsync();
         
-        _hStdInWrite?.Dispose();
-        _hStdOutRead?.Dispose();
-
-        if (_hJob != IntPtr.Zero)
-        {
-            ConPtyNative.CloseHandle(_hJob); // This kills all processes in the job
-            _hJob = IntPtr.Zero;
-        }
-
-        if (_pi.hProcess != IntPtr.Zero)
-        {
-            ConPtyNative.CloseHandle(_pi.hProcess);
-            ConPtyNative.CloseHandle(_pi.hThread);
-            _pi.hProcess = IntPtr.Zero;
-        }
-
-        if (_hPC != IntPtr.Zero)
-        {
-            ConPtyNative.ClosePseudoConsole(_hPC);
-            _hPC = IntPtr.Zero;
-        }
+        Dispose(true);
+        GC.SuppressFinalize(this);
     }
 }
