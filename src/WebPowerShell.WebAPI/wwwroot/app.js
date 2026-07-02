@@ -1224,4 +1224,161 @@ document.addEventListener('DOMContentLoaded', () => {
             if (tab) tab.fit();
         }
     });
+
+    // File Manager Logic
+    const fm = {
+        currentPath: '/',
+        container: document.getElementById('fileExplorerWorkspace'),
+        toggleBtn: document.getElementById('btnToggleFileManager'),
+        upBtn: document.getElementById('btnNavUp'),
+        refreshBtn: document.getElementById('btnRefreshFiles'),
+        uploadBtn: document.getElementById('btnUploadFile'),
+        fileInput: document.getElementById('fileUploadInput'),
+        pathDisplay: document.getElementById('currentPathDisplay'),
+        listBody: document.getElementById('fileListBody'),
+
+        async init() {
+            if (!this.container) return;
+            this.toggleBtn.addEventListener('click', () => this.toggle());
+            this.upBtn.addEventListener('click', () => this.navigateUp());
+            this.refreshBtn.addEventListener('click', () => this.loadFiles());
+            this.uploadBtn.addEventListener('click', () => this.fileInput.click());
+            this.fileInput.addEventListener('change', (e) => this.uploadFiles(e.target.files));
+            
+            // Auto-load on init
+            this.loadFiles();
+        },
+
+        toggle() {
+            this.container.classList.toggle('active');
+            // If active, resize terminal to fit new available space
+            setTimeout(() => {
+                window.dispatchEvent(new Event('resize'));
+            }, 300);
+        },
+
+        async loadFiles(path = this.currentPath) {
+            try {
+                const res = await fetch(`/api/files/list?path=${encodeURIComponent(path)}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    this.currentPath = data.currentPath;
+                    this.pathDisplay.textContent = this.currentPath;
+                    this.render(data.items);
+                } else {
+                    showToast('Failed to load directory', 'error');
+                }
+            } catch (e) {
+                showToast('Error loading directory', 'error');
+            }
+        },
+
+        render(items) {
+            this.listBody.innerHTML = '';
+            if (!items || items.length === 0) {
+                this.listBody.innerHTML = '<tr><td colspan="4" style="text-align:center;">Directory is empty</td></tr>';
+                return;
+            }
+
+            items.forEach(item => {
+                const tr = document.createElement('tr');
+                tr.className = 'file-item-row';
+                const icon = item.isDirectory ? '<i class="fa-solid fa-folder file-icon folder"></i>' : '<i class="fa-solid fa-file file-icon file"></i>';
+                const size = item.isDirectory ? '--' : this.formatSize(item.size);
+                const date = new Date(item.lastModified).toLocaleDateString();
+
+                tr.innerHTML = `
+                    <td>${icon} <span class="file-name">${item.name}</span></td>
+                    <td>${size}</td>
+                    <td>${date}</td>
+                    <td>
+                        ${!item.isDirectory ? `<button class="file-action-btn" title="Download" onclick="fm_download('${item.path}')"><i class="fa-solid fa-download"></i></button>` : ''}
+                        <button class="file-action-btn delete" title="Delete" onclick="fm_delete('${item.path}', ${item.isDirectory})"><i class="fa-solid fa-trash-can"></i></button>
+                    </td>
+                `;
+
+                tr.addEventListener('dblclick', () => {
+                    if (item.isDirectory) {
+                        this.loadFiles(item.path);
+                    }
+                });
+
+                this.listBody.appendChild(tr);
+            });
+        },
+
+        navigateUp() {
+            if (this.currentPath === '/' || this.currentPath === '') return;
+            const parts = this.currentPath.split('/').filter(Boolean);
+            parts.pop();
+            const newPath = '/' + parts.join('/');
+            this.loadFiles(newPath);
+        },
+
+        formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        },
+
+        async uploadFiles(files) {
+            if (!files || files.length === 0) return;
+
+            let successCount = 0;
+            let failCount = 0;
+
+            for (let i = 0; i < files.length; i++) {
+                const formData = new FormData();
+                formData.append('file', files[i]);
+
+                try {
+                    const res = await fetch(`/api/files/upload?path=${encodeURIComponent(this.currentPath)}`, {
+                        method: 'POST',
+                        body: formData
+                    });
+                    if (res.ok) {
+                        successCount++;
+                    } else {
+                        failCount++;
+                    }
+                } catch (e) {
+                    failCount++;
+                }
+            }
+
+            if (successCount > 0) {
+                showToast(`${successCount} file(s) uploaded successfully`, 'success');
+                this.loadFiles();
+            }
+            if (failCount > 0) {
+                showToast(`${failCount} file(s) failed to upload`, 'error');
+            }
+            this.fileInput.value = ''; // reset
+        }
+    };
+
+    // Make global for inline handlers
+    window.fm_download = (path) => {
+        window.location.href = `/api/files/download?path=${encodeURIComponent(path)}`;
+    };
+    
+    window.fm_delete = async (path, isDir) => {
+        if (confirm(`Delete ${isDir ? 'directory' : 'file'}?`)) {
+            try {
+                const res = await fetch(`/api/files/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+                if (res.ok) {
+                    showToast('Deleted', 'success');
+                    fm.loadFiles();
+                } else {
+                    showToast('Failed to delete', 'error');
+                }
+            } catch (e) {
+                showToast('Error', 'error');
+            }
+        }
+    };
+
+    fm.init();
 });

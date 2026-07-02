@@ -105,11 +105,14 @@
                 
                 <div class="topbar-right">
                     <div class="action-buttons">
+                        <button id="btnToggleFileManager" class="btn-control" title="Toggle File Manager">
+                            <i class="fa-solid fa-folder-open"></i> <span class="hide-mobile">Files</span>
+                        </button>
                         <button id="btnStopCommand" class="btn-control btn-stop-command" title="Stop current execution (Ctrl+C)" disabled>
-                            <i class="fa-solid fa-circle-stop"></i> Stop Execution
+                            <i class="fa-solid fa-circle-stop"></i> <span class="hide-mobile">Stop Execution</span>
                         </button>
                         <button id="btnClearScreen" class="btn-control" title="Clear Terminal buffer">
-                            <i class="fa-solid fa-eraser"></i> Clear
+                            <i class="fa-solid fa-eraser"></i> <span class="hide-mobile">Clear</span>
                         </button>
                     </div>
                 </div>
@@ -120,10 +123,43 @@
                 <div class="progress-bar-fill"></div>
             </div>
             
-            <!-- Terminal Workspace -->
-            <div class="terminal-workspace">
-                <div id="terminalContainers" class="terminal-containers-wrapper">
-                    <!-- Dynamic Xterm.js target elements will be loaded here -->
+            <!-- Split Workspace -->
+            <div class="workspace-split">
+                <!-- Terminal Workspace -->
+                <div class="terminal-workspace">
+                    <div id="terminalContainers" class="terminal-containers-wrapper">
+                        <!-- Dynamic Xterm.js target elements will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- File Explorer Workspace -->
+                <div class="file-explorer-workspace" id="fileExplorerWorkspace">
+                    <div class="file-explorer-header">
+                        <div class="path-navigation">
+                            <button id="btnNavUp" class="btn-icon" title="Go Up"><i class="fa-solid fa-arrow-up"></i></button>
+                            <div class="current-path" id="currentPathDisplay">/</div>
+                            <button id="btnRefreshFiles" class="btn-icon" title="Refresh"><i class="fa-solid fa-rotate-right"></i></button>
+                        </div>
+                        <div class="file-actions">
+                            <button id="btnUploadFile" class="btn-action btn-primary"><i class="fa-solid fa-upload"></i> Upload</button>
+                            <input type="file" id="fileUploadInput" style="display: none;" multiple />
+                        </div>
+                    </div>
+                    <div class="file-list-container">
+                        <table class="glass-table file-table">
+                            <thead>
+                                <tr>
+                                    <th>Name</th>
+                                    <th>Size</th>
+                                    <th>Date</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="fileListBody">
+                                <!-- Dynamic File Items -->
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </main>

@@ -17,6 +17,7 @@ using WebPowerShell.Infrastructure.Security;
 using WebPowerShell.Infrastructure.ConPTY;
 using WebPowerShell.WebAPI.Hubs;
 using WebPowerShell.WebAPI.Middleware;
+using WebPowerShell.Application.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -45,6 +46,8 @@ builder.Services.AddScoped<LoginCommandHandler>();
 builder.Services.AddScoped<ChangePasswordCommandHandler>();
 builder.Services.AddScoped<WebPowerShell.Application.Users.Commands.CreateUser.CreateUserCommandHandler>();
 
+// File Manager Service
+builder.Services.AddSingleton<FileManagerService>();
 
 
 // OpenAPI
@@ -259,6 +262,70 @@ app.MapDelete("/api/admin/sessions/{id}", async (Guid id, ITerminalSessionManage
     return Results.Ok(new { Success = true });
 })
 .RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+// File Manager Endpoints
+app.MapGet("/api/files/list", (string? path, FileManagerService fileManagerService) =>
+{
+    try
+    {
+        var items = fileManagerService.ListFiles(path ?? "");
+        return Results.Ok(new { currentPath = string.IsNullOrEmpty(path) ? "/" : path, items });
+    }
+    catch (UnauthorizedAccessException) { return Results.Forbid(); }
+    catch (Exception ex) { return Results.BadRequest(new { message = ex.Message }); }
+})
+.RequireAuthorization();
+
+app.MapDelete("/api/files/delete", (string path, FileManagerService fileManagerService) =>
+{
+    try
+    {
+        fileManagerService.DeleteItem(path);
+        return Results.Ok(new { success = true });
+    }
+    catch (UnauthorizedAccessException) { return Results.Forbid(); }
+    catch (Exception ex) { return Results.BadRequest(new { message = ex.Message }); }
+})
+.RequireAuthorization();
+
+app.MapGet("/api/files/download", (string path, FileManagerService fileManagerService) =>
+{
+    try
+    {
+        var filePath = fileManagerService.GetFilePath(path);
+        var provider = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
+        if (!provider.TryGetContentType(filePath, out var contentType))
+        {
+            contentType = "application/octet-stream";
+        }
+        return Results.File(System.IO.File.OpenRead(filePath), contentType, Path.GetFileName(filePath));
+    }
+    catch (UnauthorizedAccessException) { return Results.Forbid(); }
+    catch (Exception ex) { return Results.BadRequest(new { message = ex.Message }); }
+})
+.RequireAuthorization();
+
+app.MapPost("/api/files/upload", async (HttpRequest request, string? path, FileManagerService fileManagerService) =>
+{
+    try
+    {
+        if (!request.HasFormContentType) return Results.BadRequest(new { message = "Form content type required." });
+        var form = await request.ReadFormAsync();
+        var file = form.Files.FirstOrDefault();
+        if (file != null && file.Length > 0)
+        {
+            using (var stream = file.OpenReadStream())
+            {
+                fileManagerService.SaveFile(path ?? "", file.FileName, stream);
+            }
+            return Results.Ok(new { success = true });
+        }
+        return Results.BadRequest(new { message = "Empty file." });
+    }
+    catch (UnauthorizedAccessException) { return Results.Forbid(); }
+    catch (Exception ex) { return Results.BadRequest(new { message = ex.Message }); }
+})
+.RequireAuthorization();
 
 var summaries = new[]
 {
