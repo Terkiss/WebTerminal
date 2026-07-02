@@ -79,5 +79,38 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                 return Result<bool>.Fail(new AppFailure("DatabaseError", ex.Message));
             }
         }
+
+        public async Task<Result<System.Collections.Generic.IEnumerable<User>>> GetAllAsync(CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var users = await _context.Users.ToListAsync(cancellationToken);
+                return Result<System.Collections.Generic.IEnumerable<User>>.Success(users);
+            }
+            catch (Exception ex)
+            {
+                return Result<System.Collections.Generic.IEnumerable<User>>.Fail(new AppFailure("DatabaseError", ex.Message));
+            }
+        }
+
+        public async Task<Result<bool>> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                var user = await _context.Users.FindAsync(new object[] { id }, cancellationToken);
+                if (user == null)
+                {
+                    return Result<bool>.Fail(new AppFailure("UserNotFound", "User not found."));
+                }
+
+                _context.Users.Remove(user);
+                await _context.SaveChangesAsync(cancellationToken);
+                return Result<bool>.Success(true);
+            }
+            catch (Exception ex)
+            {
+                return Result<bool>.Fail(new AppFailure("DatabaseError", ex.Message));
+            }
+        }
     }
 }

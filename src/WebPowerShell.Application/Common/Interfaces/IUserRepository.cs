@@ -11,5 +11,7 @@ namespace WebPowerShell.Application.Common.Interfaces
         Task<Result<User>> GetByIdAsync(Guid id, CancellationToken cancellationToken = default);
         Task<Result<User>> GetByUsernameAsync(string username, CancellationToken cancellationToken = default);
         Task<Result<bool>> SaveAsync(User user, CancellationToken cancellationToken = default);
+        Task<Result<System.Collections.Generic.IEnumerable<User>>> GetAllAsync(CancellationToken cancellationToken = default);
+        Task<Result<bool>> DeleteAsync(Guid id, CancellationToken cancellationToken = default);
     }
 }

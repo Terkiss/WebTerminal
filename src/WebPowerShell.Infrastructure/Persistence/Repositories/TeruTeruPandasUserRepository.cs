@@ -186,6 +186,84 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
             }
         }
 
+        public Task<Result<System.Collections.Generic.IEnumerable<User>>> GetAllAsync(CancellationToken cancellationToken = default)
+        {
+            _lock.EnterReadLock();
+            try
+            {
+                var list = new System.Collections.Generic.List<User>();
+                for (int i = 0; i < _users.RowCount; i++)
+                {
+                    if (_users[i, COL_ID]?.ToString() != "__SENTINEL__")
+                    {
+                        list.Add(RowToUser(i));
+                    }
+                }
+                return Task.FromResult(Result<System.Collections.Generic.IEnumerable<User>>.Success(list));
+            }
+            catch (Exception ex)
+            {
+                return Task.FromResult(Result<System.Collections.Generic.IEnumerable<User>>.Fail(new AppFailure("DataFrameError", ex.Message)));
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+        }
+
+        public Task<Result<bool>> DeleteAsync(Guid id, CancellationToken cancellationToken = default)
+        {
+            _lock.EnterWriteLock();
+            try
+            {
+                string idStr = id.ToString();
+                int targetRow = -1;
+                for (int i = 0; i < _users.RowCount; i++)
+                {
+                    if (string.Equals(_users[i, COL_ID]?.ToString(), idStr, StringComparison.OrdinalIgnoreCase))
+                    {
+                        targetRow = i;
+                        break;
+                    }
+                }
+
+                if (targetRow < 0)
+                {
+                    return Task.FromResult(Result<bool>.Fail(new AppFailure("UserNotFound", "User not found.")));
+                }
+
+                int oldCount = _users.RowCount;
+                int newCount = oldCount - 1;
+
+                var newColumns = new System.Collections.Generic.Dictionary<string, IColumn>();
+                foreach (var colName in AllColumns)
+                {
+                    var values = new string?[newCount];
+                    int idx = 0;
+                    for (int i = 0; i < oldCount; i++)
+                    {
+                        if (i != targetRow)
+                        {
+                            values[idx++] = _users[i, colName]?.ToString() ?? "";
+                        }
+                    }
+                    newColumns[colName] = new StringColumn(values);
+                }
+
+                _users = new DataFrame(newColumns);
+                _isDirty = true;
+                return Task.FromResult(Result<bool>.Success(true));
+            }
+            catch (Exception ex)
+            {
+                return Task.FromResult(Result<bool>.Fail(new AppFailure("DataFrameError", ex.Message)));
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
         /// <summary>
         /// Convert a DataFrame row index to a User domain entity.
         /// </summary>

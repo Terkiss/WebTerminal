@@ -210,6 +210,56 @@ app.MapPost("/api/users", async (WebPowerShell.Application.Users.Commands.Create
 })
 .RequireAuthorization(policy => policy.RequireRole("Admin"));
 
+app.MapGet("/api/admin/users", async (IUserRepository userRepo) =>
+{
+    var result = await userRepo.GetAllAsync();
+    if (result.IsFailure)
+    {
+        return Results.Json(result.Failure, statusCode: StatusCodes.Status400BadRequest);
+    }
+    
+    // Return sanitized users
+    var users = result.Value!.Select(u => new 
+    {
+        u.Id, u.Username, u.IsActive, u.IsAdmin, u.CreatedAt, u.UpdatedAt, u.FailedLoginCount, u.LockedUntil
+    });
+    return Results.Ok(users);
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+app.MapDelete("/api/admin/users/{id}", async (Guid id, IUserRepository userRepo) =>
+{
+    var result = await userRepo.DeleteAsync(id);
+    if (result.IsFailure)
+    {
+        return Results.Json(result.Failure, statusCode: StatusCodes.Status400BadRequest);
+    }
+    return Results.Ok(new { Success = true });
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+app.MapGet("/api/admin/sessions", (ITerminalSessionManager sessionManager) =>
+{
+    var sessions = sessionManager.GetAllSessions();
+    var result = sessions.Select(s => new 
+    {
+        s.SessionId, s.OwnerUserId, s.CreatedAt, s.LastActivityAt, s.WorkingDirectory, s.HasConnections, ConnectionCount = s.ConnectionIds.Count
+    });
+    return Results.Ok(result);
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+app.MapDelete("/api/admin/sessions/{id}", async (Guid id, ITerminalSessionManager sessionManager) =>
+{
+    var result = await sessionManager.CloseSessionAsync(id);
+    if (result.IsFailure)
+    {
+        return Results.Json(result.Failure, statusCode: StatusCodes.Status400BadRequest);
+    }
+    return Results.Ok(new { Success = true });
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
+
 var summaries = new[]
 {
     "Freezing", "Bracing", "Chilly", "Cool", "Mild", "Warm", "Balmy", "Hot", "Sweltering", "Scorching"

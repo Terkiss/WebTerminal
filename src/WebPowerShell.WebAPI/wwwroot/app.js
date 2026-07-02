@@ -781,6 +781,201 @@ document.addEventListener('DOMContentLoaded', () => {
                 createNewTab();
             }
         }
+    showLoginView();
+    showToast('Secure session successfully logged out.', 'info');
+}
+
+// Global Event Listeners & Bootstrapping
+document.addEventListener('DOMContentLoaded', () => {
+    // 1. Initial login check
+    checkInitialAuth();
+    
+    // 2. Login Form submit
+    const loginForm = document.getElementById('loginForm');
+    if (loginForm) {
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const usernameInput = document.getElementById('loginUsername');
+            const passwordInput = document.getElementById('loginPassword');
+            const errorMsg = document.getElementById('loginErrorMsg');
+            const submitBtn = document.getElementById('btnLoginSubmit');
+            
+            submitBtn.disabled = true;
+            errorMsg.classList.add('hidden');
+            
+            try {
+                const response = await fetch(API.LOGIN, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: usernameInput.value,
+                        password: passwordInput.value
+                    })
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    state.username = data.username || usernameInput.value;
+                    state.isAdmin = data.isAdmin === true;
+                    passwordInput.value = '';
+                    showAppView();
+                } else {
+                    let errMsg = 'Authentication failed. Please verify credentials.';
+                    try {
+                        const errorData = await response.json();
+                        if (errorData && errorData.message) errMsg = errorData.message;
+                    } catch(err) {}
+                    
+                    errorMsg.querySelector('span').textContent = errMsg;
+                    errorMsg.classList.remove('hidden');
+                }
+            } catch (err) {
+                errorMsg.querySelector('span').textContent = 'Server connection failed.';
+                errorMsg.classList.remove('hidden');
+                console.error(err);
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    }
+    
+    // 3. Logout action
+    const logoutBtn = document.getElementById('btnLogout');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', async () => {
+            try {
+                await fetch(API.LOGOUT, { method: 'POST' });
+            } catch (e) {
+                console.error(e);
+            }
+            logoutApp();
+        });
+    }
+    
+    // 4. Change Password Modals
+    const btnOpenChangePw = document.getElementById('btnOpenChangePassword');
+    const overlayChangePw = document.getElementById('changePasswordOverlay');
+    const btnCancelChangePw = document.getElementById('btnCancelChangePassword');
+    const changePwForm = document.getElementById('changePasswordForm');
+    
+    // Elements for mobile close automation
+    const sidebar = document.querySelector('.sidebar');
+    const sidebarOverlay = document.getElementById('sidebarOverlay');
+    
+    if (btnOpenChangePw && overlayChangePw) {
+        btnOpenChangePw.addEventListener('click', () => {
+            overlayChangePw.classList.add('active');
+            if (sidebar && sidebar.classList.contains('active')) {
+                sidebar.classList.remove('active');
+                sidebarOverlay.classList.remove('active');
+            }
+        });
+    }
+    if (btnCancelChangePw && overlayChangePw) {
+        btnCancelChangePw.addEventListener('click', () => {
+            overlayChangePw.classList.remove('active');
+            changePwForm.reset();
+            document.getElementById('changePasswordErrorMsg').classList.add('hidden');
+        });
+    }
+    if (changePwForm && overlayChangePw) {
+        changePwForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const oldPasswordInput = document.getElementById('oldPassword');
+            const newPasswordInput = document.getElementById('newPassword');
+            const confirmInput = document.getElementById('confirmNewPassword');
+            const errorMsg = document.getElementById('changePasswordErrorMsg');
+            const submitBtn = document.getElementById('btnChangePasswordSubmit');
+            
+            errorMsg.classList.add('hidden');
+            
+            if (newPasswordInput.value !== confirmInput.value) {
+                errorMsg.querySelector('span').textContent = 'Confirm password does not match.';
+                errorMsg.classList.add('hidden');
+                return;
+            }
+            
+            submitBtn.disabled = true;
+            
+            try {
+                const response = await fetch(API.CHANGE_PASSWORD, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        currentPassword: oldPasswordInput.value,
+                        newPassword: newPasswordInput.value
+                    })
+                });
+                
+                if (response.ok) {
+                    showToast('Password successfully updated.', 'success');
+                    overlayChangePw.classList.remove('active');
+                    changePwForm.reset();
+                } else {
+                    let errMsg = 'Failed to change password. Old password may be incorrect.';
+                    try {
+                        const errorData = await response.json();
+                        if (errorData && errorData.message) errMsg = errorData.message;
+                    } catch(err) {}
+                    
+                    errorMsg.querySelector('span').textContent = errMsg;
+                    errorMsg.classList.remove('hidden');
+                }
+            } catch (err) {
+                errorMsg.querySelector('span').textContent = 'Server connection failed.';
+                errorMsg.classList.remove('hidden');
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+    }
+    
+    // 5. App Dashboard actions
+    const btnNewTab = document.getElementById('btnNewTab');
+    if (btnNewTab) {
+        btnNewTab.addEventListener('click', () => {
+            createNewTab();
+            if (sidebar && sidebar.classList.contains('active')) {
+                sidebar.classList.remove('active');
+                sidebarOverlay.classList.remove('active');
+            }
+        });
+    }
+    
+    const btnClear = document.getElementById('btnClearScreen');
+    if (btnClear) {
+        btnClear.addEventListener('click', () => clearActiveTerminal());
+    }
+    
+    const btnStop = document.getElementById('btnStopCommand');
+    if (btnStop) {
+        btnStop.addEventListener('click', () => {
+            if (state.activeTabId) {
+                abortExecution(state.activeTabId);
+            }
+        });
+    }
+    
+    // 6. Window resize handler (debounced)
+    let resizeTimeout;
+    window.addEventListener('resize', () => {
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => {
+            for (const tab of state.tabs.values()) {
+                tab.fit();
+            }
+        }, 150);
+    });
+    
+    // 7. Shortcut Key Bindings
+    window.addEventListener('keydown', (e) => {
+        // Prevent default browser behavior for terminal app shortcuts
+        if (e.ctrlKey && e.key === 't') { // Ctrl+T New Tab
+            e.preventDefault();
+            if (!document.getElementById('appContainer').classList.contains('hidden')) {
+                createNewTab();
+            }
+        }
     });
     
     // 8. Mobile Sidebar Toggle & Overlay logic
@@ -799,18 +994,68 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 9. Admin Dashboard
     const adminBtn = document.getElementById('adminBtn');
-    const adminModal = document.getElementById('adminModal');
-    const createUserForm = document.getElementById('createUserForm');
+    const adminDashboard = document.getElementById('adminDashboardOverlay');
+    const btnShowCreateUser = document.getElementById('btnShowCreateUser');
+    const btnBackToUsers = document.getElementById('btnBackToUsers');
+    const btnRefreshSessions = document.getElementById('btnRefreshSessions');
+    
+    // Tabs in Dashboard
+    const dashTabs = document.querySelectorAll('.dash-tab');
+    dashTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            dashTabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            
+            document.querySelectorAll('.dash-pane').forEach(p => {
+                p.classList.remove('active');
+                p.style.display = 'none';
+            });
+            const targetId = tab.getAttribute('data-target');
+            const target = document.getElementById(targetId);
+            if (target) {
+                target.style.display = 'block';
+                // Trigger reflow
+                void target.offsetWidth;
+                target.classList.add('active');
+            }
+            
+            if (targetId === 'dash-users') loadAdminUsers();
+            if (targetId === 'dash-sessions') loadAdminSessions();
+        });
+    });
 
-    if (adminBtn && adminModal) {
+    if (adminBtn && adminDashboard) {
         adminBtn.addEventListener('click', () => {
-            adminModal.classList.add('active');
-            document.getElementById('createAuthError').classList.add('hidden');
-            document.getElementById('createAuthSuccess').classList.add('hidden');
-            if(createUserForm) createUserForm.reset();
+            adminDashboard.classList.add('active');
+            // reset to users tab
+            if(dashTabs.length > 0) dashTabs[0].click();
         });
     }
 
+    if (btnShowCreateUser) {
+        btnShowCreateUser.addEventListener('click', () => {
+            document.getElementById('dash-users').style.display = 'none';
+            document.getElementById('dash-users').classList.remove('active');
+            document.getElementById('dash-create-user').style.display = 'block';
+            void document.getElementById('dash-create-user').offsetWidth;
+            document.getElementById('dash-create-user').classList.add('active');
+            document.getElementById('createAuthError').classList.add('hidden');
+            document.getElementById('createAuthSuccess').classList.add('hidden');
+            document.getElementById('createUserForm').reset();
+        });
+    }
+
+    if (btnBackToUsers) {
+        btnBackToUsers.addEventListener('click', () => {
+            if(dashTabs.length > 0) dashTabs[0].click();
+        });
+    }
+
+    if (btnRefreshSessions) {
+        btnRefreshSessions.addEventListener('click', loadAdminSessions);
+    }
+
+    const createUserForm = document.getElementById('createUserForm');
     if (createUserForm) {
         createUserForm.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -836,24 +1081,140 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (response.ok) {
                     successMsg.classList.remove('hidden');
                     createUserForm.reset();
-                    setTimeout(() => adminModal.classList.remove('active'), 2000);
+                    setTimeout(() => dashTabs[0].click(), 1500); // go back to list
                 } else {
                     let errMsg = 'Failed to create user.';
                     try {
                         const errorData = await response.json();
                         if (errorData && errorData.message) errMsg = errorData.message;
                     } catch(err) {}
-                    errorMsg.textContent = errMsg;
+                    errorMsg.querySelector('span').textContent = errMsg;
                     errorMsg.classList.remove('hidden');
                 }
             } catch (err) {
-                errorMsg.textContent = 'Server connection failed.';
+                errorMsg.querySelector('span').textContent = 'Server connection failed.';
                 errorMsg.classList.remove('hidden');
-                console.error(err);
             } finally {
                 submitBtn.disabled = false;
             }
         });
+    }
+
+    // Load functions
+    async function loadAdminUsers() {
+        const tbody = document.getElementById('adminUsersTableBody');
+        if (!tbody) return;
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">Loading...</td></tr>';
+        
+        try {
+            const res = await fetch('/api/admin/users');
+            if (res.ok) {
+                const users = await res.json();
+                tbody.innerHTML = '';
+                users.forEach(u => {
+                    const tr = document.createElement('tr');
+                    const roleBadge = u.isAdmin ? '<span class="badge badge-admin">Admin</span>' : '<span class="badge badge-user">User</span>';
+                    const statusBadge = u.isActive ? '<span class="badge badge-active">Active</span>' : '<span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3)">Inactive</span>';
+                    
+                    tr.innerHTML = `
+                        <td>${u.username}</td>
+                        <td>${roleBadge}</td>
+                        <td>${statusBadge}</td>
+                        <td>${new Date(u.createdAt).toLocaleDateString()}</td>
+                        <td>
+                            <button class="btn-danger-sm btn-delete-user" data-id="${u.id}" ${u.username === state.username ? 'disabled title="Cannot delete yourself"' : ''}>
+                                <i class="fa-solid fa-trash-can"></i> Delete
+                            </button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+                // Attach delete handlers
+                document.querySelectorAll('.btn-delete-user').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        const id = e.currentTarget.getAttribute('data-id');
+                        if (confirm('Are you sure you want to delete this user?')) {
+                            try {
+                                const delRes = await fetch(`/api/admin/users/${id}`, { method: 'DELETE' });
+                                if (delRes.ok) {
+                                    showToast('User deleted', 'success');
+                                    loadAdminUsers();
+                                } else {
+                                    showToast('Failed to delete user', 'error');
+                                }
+                            } catch (err) {
+                                showToast('Server error', 'error');
+                            }
+                        }
+                    });
+                });
+            } else {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger-color);">Failed to load users</td></tr>';
+            }
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger-color);">Error connecting to server</td></tr>';
+        }
+    }
+
+    async function loadAdminSessions() {
+        const tbody = document.getElementById('adminSessionsTableBody');
+        if (!tbody) return;
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">Loading...</td></tr>';
+        
+        try {
+            const res = await fetch('/api/admin/sessions');
+            if (res.ok) {
+                const sessions = await res.json();
+                tbody.innerHTML = '';
+                if (sessions.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center;">No active sessions</td></tr>';
+                    return;
+                }
+
+                sessions.forEach(s => {
+                    const tr = document.createElement('tr');
+                    const connBadge = s.hasConnections ? '<span class="badge badge-active">Attached</span>' : '<span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.3)">Detached</span>';
+                    
+                    tr.innerHTML = `
+                        <td style="font-family: monospace; font-size: 0.85em;">${s.sessionId.substring(0,8)}...</td>
+                        <td>${s.ownerUserId.substring(0,8)}...</td>
+                        <td>${connBadge} (${s.connectionCount})</td>
+                        <td>${new Date(s.lastActivityAt).toLocaleTimeString()}</td>
+                        <td>
+                            <button class="btn-danger-sm btn-kill-session" data-id="${s.sessionId}">
+                                <i class="fa-solid fa-power-off"></i> Kill
+                            </button>
+                        </td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+                // Attach kill handlers
+                document.querySelectorAll('.btn-kill-session').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        const id = e.currentTarget.getAttribute('data-id');
+                        if (confirm('Are you sure you want to kill this session?')) {
+                            try {
+                                const killRes = await fetch(`/api/admin/sessions/${id}`, { method: 'DELETE' });
+                                if (killRes.ok) {
+                                    showToast('Session killed', 'success');
+                                    loadAdminSessions();
+                                } else {
+                                    showToast('Failed to kill session', 'error');
+                                }
+                            } catch (err) {
+                                showToast('Server error', 'error');
+                            }
+                        }
+                    });
+                });
+            } else {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger-color);">Failed to load sessions</td></tr>';
+            }
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger-color);">Error connecting to server</td></tr>';
+        }
     }
 
     // Handle global window resize
