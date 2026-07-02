@@ -201,6 +201,52 @@ app.MapPost("/api/auth/logout", async (HttpContext httpContext) =>
 })
 .RequireAuthorization();
 
+app.MapGet("/api/users/preferences", async (HttpContext httpContext, IUserRepository userRepo) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null || !Guid.TryParse(userIdClaim.Value, out var userId))
+    {
+        return Results.Json(AppFailure.Unauthorized, statusCode: StatusCodes.Status401Unauthorized);
+    }
+    var userResult = await userRepo.GetByIdAsync(userId);
+    if (userResult.IsFailure) return Results.Json(userResult.Failure, statusCode: StatusCodes.Status401Unauthorized);
+    
+    var prefs = userResult.Value!.Preferences;
+    if (string.IsNullOrEmpty(prefs)) {
+        return Results.Ok(new { fontSize = 14, themeBackground = "#090d16", themeForeground = "#cbd5e1" });
+    }
+    try {
+        var parsed = JsonSerializer.Deserialize<object>(prefs);
+        return Results.Ok(parsed);
+    } catch {
+        return Results.Ok(new { fontSize = 14, themeBackground = "#090d16", themeForeground = "#cbd5e1" });
+    }
+})
+.RequireAuthorization();
+
+app.MapPut("/api/users/preferences", async (HttpRequest req, HttpContext httpContext, IUserRepository userRepo) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null || !Guid.TryParse(userIdClaim.Value, out var userId))
+    {
+        return Results.Json(AppFailure.Unauthorized, statusCode: StatusCodes.Status401Unauthorized);
+    }
+    
+    using var reader = new System.IO.StreamReader(req.Body);
+    var body = await reader.ReadToEndAsync();
+    
+    var userResult = await userRepo.GetByIdAsync(userId);
+    if (userResult.IsFailure) return Results.Json(userResult.Failure, statusCode: StatusCodes.Status401Unauthorized);
+    
+    var user = userResult.Value!;
+    user.Preferences = body;
+    user.UpdatedAt = DateTimeOffset.UtcNow;
+    await userRepo.SaveAsync(user);
+    
+    return Results.Ok(new { success = true });
+})
+.RequireAuthorization();
+
 app.MapPost("/api/users", async (WebPowerShell.Application.Users.Commands.CreateUser.CreateUserCommand command, WebPowerShell.Application.Users.Commands.CreateUser.CreateUserCommandHandler handler) =>
 {
     var result = await handler.HandleAsync(command);

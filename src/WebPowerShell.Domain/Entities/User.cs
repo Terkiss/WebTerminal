@@ -14,5 +14,6 @@ namespace WebPowerShell.Domain.Entities
         public int FailedLoginCount { get; set; }
         public DateTimeOffset? LockedUntil { get; set; }
         public bool IsAdmin { get; set; }
+        public string Preferences { get; set; } = string.Empty;
     }
 }

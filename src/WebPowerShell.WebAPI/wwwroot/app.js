@@ -6,7 +6,8 @@ const API = {
     LOGIN: '/api/auth/login',
     LOGOUT: '/api/auth/logout',
     CHANGE_PASSWORD: '/api/auth/change-password',
-    TERMINAL_HUB: '/hubs/terminal'
+    TERMINAL_HUB: '/hubs/terminal',
+    PREFERENCES: '/api/users/preferences'
 };
 
 // Global State
@@ -15,7 +16,8 @@ const state = {
     tabs: new Map(), // tabId (string) -> Tab instance
     activeTabId: null,
     username: 'Administrator',
-    isAdmin: false
+    isAdmin: false,
+    preferences: null
 };
 
 // Cryptographically Strong UUID Generator Fallback
@@ -88,9 +90,16 @@ function showLoginView() {
     document.getElementById('appContainer').classList.add('hidden');
 }
 
-function showAppView() {
+async function showAppView() {
     document.getElementById('loginOverlay').classList.remove('active');
     document.getElementById('appContainer').classList.remove('hidden');
+    
+    try {
+        const prefRes = await fetch(API.PREFERENCES);
+        if (prefRes.ok) {
+            state.preferences = await prefRes.json();
+        }
+    } catch(e) { console.warn('Failed to load preferences', e); }
     
     const displayUser = document.getElementById('welcomeUser'); // Fixed ID from index.html
     if (displayUser) {
@@ -339,14 +348,18 @@ class Tab {
         this.domElement = container;
         
         // 3. Initialize Xterm (but do NOT open yet)
+        const themeBg = state.preferences?.themeBackground || '#090d16';
+        const themeFg = state.preferences?.themeForeground || '#cbd5e1';
+        const fontSize = state.preferences?.fontSize || 14;
+
         this.terminal = new Terminal({
             cursorBlink: true,
             cursorStyle: 'bar',
-            fontSize: 14,
+            fontSize: fontSize,
             fontFamily: "'Fira Code', 'JetBrains Mono', Courier New, monospace",
             theme: {
-                background: '#090d16',
-                foreground: '#cbd5e1',
+                background: themeBg,
+                foreground: themeFg,
                 cursor: '#00f2fe',
                 selectionBackground: 'rgba(0, 242, 254, 0.25)',
                 black: '#0f172a',
@@ -735,6 +748,88 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
+    // Preferences Modals
+    const btnOpenSettings = document.getElementById('btnOpenSettings');
+    const overlaySettings = document.getElementById('settingsOverlay');
+    const btnCancelSettings = document.getElementById('btnCancelSettings');
+    const settingsForm = document.getElementById('settingsForm');
+    const prefFontSize = document.getElementById('prefFontSize');
+    const prefFontSizeVal = document.getElementById('prefFontSizeVal');
+    const prefThemeBackground = document.getElementById('prefThemeBackground');
+    const prefThemeForeground = document.getElementById('prefThemeForeground');
+
+    if (prefFontSize && prefFontSizeVal) {
+        prefFontSize.addEventListener('input', (e) => {
+            prefFontSizeVal.textContent = e.target.value;
+        });
+    }
+
+    if (btnOpenSettings && overlaySettings) {
+        btnOpenSettings.addEventListener('click', () => {
+            if (state.preferences) {
+                prefFontSize.value = state.preferences.fontSize || 14;
+                prefFontSizeVal.textContent = state.preferences.fontSize || 14;
+                prefThemeBackground.value = state.preferences.themeBackground || '#090d16';
+                prefThemeForeground.value = state.preferences.themeForeground || '#cbd5e1';
+            }
+            overlaySettings.classList.add('active');
+            if (sidebar && sidebar.classList.contains('active')) {
+                sidebar.classList.remove('active');
+                sidebarOverlay.classList.remove('active');
+            }
+        });
+    }
+    
+    if (btnCancelSettings && overlaySettings) {
+        btnCancelSettings.addEventListener('click', () => {
+            overlaySettings.classList.remove('active');
+        });
+    }
+    
+    if (settingsForm && overlaySettings) {
+        settingsForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btnSaveSettings = document.getElementById('btnSaveSettings');
+            btnSaveSettings.disabled = true;
+            
+            const newPrefs = {
+                fontSize: parseInt(prefFontSize.value, 10),
+                themeBackground: prefThemeBackground.value,
+                themeForeground: prefThemeForeground.value
+            };
+            
+            try {
+                const response = await fetch(API.PREFERENCES, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newPrefs)
+                });
+                
+                if (response.ok) {
+                    state.preferences = newPrefs;
+                    // Apply to all existing tabs
+                    for (const tab of state.tabs.values()) {
+                        tab.terminal.options.fontSize = state.preferences.fontSize;
+                        const currentTheme = tab.terminal.options.theme;
+                        tab.terminal.options.theme = Object.assign({}, currentTheme, {
+                            background: state.preferences.themeBackground,
+                            foreground: state.preferences.themeForeground
+                        });
+                        tab.fit(); // refit with new font size
+                    }
+                    showToast('Preferences saved.', 'success');
+                    overlaySettings.classList.remove('active');
+                } else {
+                    showToast('Failed to save preferences.', 'error');
+                }
+            } catch (err) {
+                showToast('Server connection failed.', 'error');
+            } finally {
+                btnSaveSettings.disabled = false;
+            }
+        });
+    }
+
     // 5. App Dashboard actions
     const btnNewTab = document.getElementById('btnNewTab');
     if (btnNewTab) {

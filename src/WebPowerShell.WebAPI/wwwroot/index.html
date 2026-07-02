@@ -75,6 +75,10 @@
                         <i class="fa-solid fa-users-gear"></i>
                         <span>Users</span>
                     </button>
+                    <button id="btnOpenSettings" class="btn-action" title="Settings">
+                        <i class="fa-solid fa-gear"></i>
+                        <span>Settings</span>
+                    </button>
                     <button id="btnOpenChangePassword" class="btn-action" title="Change Password">
                         <i class="fa-solid fa-key"></i>
                         <span>Security</span>
@@ -247,6 +251,45 @@
                     <button type="button" id="btnCancelChangePassword" class="btn-cancel">Cancel</button>
                     <button type="submit" id="btnChangePasswordSubmit" class="btn-submit">
                         <span>Change Password</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- SETTINGS MODAL -->
+    <div id="settingsOverlay" class="overlay">
+        <div class="glass-card settings-card">
+            <div class="card-header">
+                <div class="modal-icon"><i class="fa-solid fa-gear"></i></div>
+                <h2>Preferences</h2>
+                <p>Customize your terminal appearance.</p>
+            </div>
+            
+            <form id="settingsForm" class="auth-form">
+                <div class="form-group">
+                    <label for="prefFontSize" style="display:flex; justify-content:space-between;">Font Size <span><span id="prefFontSizeVal">14</span>px</span></label>
+                    <div class="range-wrapper">
+                        <input type="range" id="prefFontSize" min="10" max="28" value="14" step="1" style="width: 100%;">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="prefThemeBackground">Background Color</label>
+                    <div class="input-wrapper color-picker-wrapper">
+                        <input type="color" id="prefThemeBackground" value="#090d16" style="width: 100%; height: 40px; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 2px;">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="prefThemeForeground">Foreground Color</label>
+                    <div class="input-wrapper color-picker-wrapper">
+                        <input type="color" id="prefThemeForeground" value="#cbd5e1" style="width: 100%; height: 40px; background: transparent; border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 2px;">
+                    </div>
+                </div>
+                
+                <div class="modal-actions">
+                    <button type="button" id="btnCancelSettings" class="btn-cancel">Cancel</button>
+                    <button type="submit" id="btnSaveSettings" class="btn-submit">
+                        <span>Save Changes</span>
                     </button>
                 </div>
             </form>

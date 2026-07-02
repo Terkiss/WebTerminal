@@ -41,12 +41,13 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
         private const string COL_FAILED_LOGIN = "FailedLoginCount";
         private const string COL_LOCKED_UNTIL = "LockedUntil";
         private const string COL_IS_ADMIN = "IsAdmin";
+        private const string COL_PREFERENCES = "Preferences";
 
         private static readonly string[] AllColumns = new[]
         {
             COL_ID, COL_USERNAME, COL_PASSWORD_HASH, COL_LAST_PW_CHANGE,
             COL_IS_ACTIVE, COL_CREATED_AT, COL_UPDATED_AT,
-            COL_FAILED_LOGIN, COL_LOCKED_UNTIL, COL_IS_ADMIN
+            COL_FAILED_LOGIN, COL_LOCKED_UNTIL, COL_IS_ADMIN, COL_PREFERENCES
         };
 
         public TeruTeruPandasUserRepository(ILogger<TeruTeruPandasUserRepository>? logger = null)
@@ -136,6 +137,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                     _users[existingRow, COL_FAILED_LOGIN]    = user.FailedLoginCount.ToString();
                     _users[existingRow, COL_LOCKED_UNTIL]    = user.LockedUntil?.ToString("O") ?? "";
                     _users[existingRow, COL_IS_ADMIN]        = user.IsAdmin.ToString();
+                    _users[existingRow, COL_PREFERENCES]     = user.Preferences ?? "";
                 }
                 else
                 {
@@ -165,6 +167,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                             COL_FAILED_LOGIN   => user.FailedLoginCount.ToString(),
                             COL_LOCKED_UNTIL   => user.LockedUntil?.ToString("O") ?? "",
                             COL_IS_ADMIN       => user.IsAdmin.ToString(),
+                            COL_PREFERENCES    => user.Preferences ?? "",
                             _                  => ""
                         };
                         newColumns[colName] = new StringColumn(values);
@@ -281,6 +284,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                 FailedLoginCount       = int.TryParse(_users[rowIndex, COL_FAILED_LOGIN]?.ToString(), out var flc) ? flc : 0,
                 LockedUntil            = DateTimeOffset.TryParse(_users[rowIndex, COL_LOCKED_UNTIL]?.ToString(), out var lu) ? lu : null,
                 IsAdmin                = bool.TryParse(_users[rowIndex, COL_IS_ADMIN]?.ToString(), out var isa) && isa,
+                Preferences            = _users[rowIndex, COL_PREFERENCES]?.ToString() ?? "",
             };
         }
 
