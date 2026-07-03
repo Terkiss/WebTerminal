@@ -85,6 +85,19 @@ public class TerminalHub : Hub
         // Automatically attach
         session.Attach(Context.ConnectionId);
 
+        var scrollback = session.GetScrollbackSnapshot();
+        if (scrollback.Length > 0)
+        {
+            try
+            {
+                await Clients.Caller.SendAsync("TerminalOutput", tabId, scrollback);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to send initial scrollback to client");
+            }
+        }
+
         return HubResponse.Ok();
     }
 

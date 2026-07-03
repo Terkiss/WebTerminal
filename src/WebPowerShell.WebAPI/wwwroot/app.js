@@ -130,19 +130,28 @@ function initSignalR() {
     // Listeners
     state.connection.on("TerminalOutput", (tabId, chunk) => {
         const tab = state.tabs.get(tabId);
-        if (tab && chunk) {
-            // SignalR provides 'chunk' as a Uint8Array or base64 string
-            let data = chunk;
-            if (typeof chunk === 'string') {
-                // if it comes as base64 for some reason
-                const binary_string = window.atob(chunk);
-                const len = binary_string.length;
-                data = new Uint8Array(len);
-                for (let i = 0; i < len; i++) {
-                    data[i] = binary_string.charCodeAt(i);
+        if (!tab || !chunk) return;
+
+        let output = chunk;
+        if (typeof chunk === 'string') {
+            try {
+                const binary = window.atob(chunk);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                    bytes[i] = binary.charCodeAt(i);
                 }
+                output = tab.decoder.decode(bytes, { stream: true });
+            } catch (e) {
+                console.warn('Failed to decode terminal output payload:', e);
+                return;
             }
-            tab.terminal.write(data);
+        }
+
+        // Buffer writes until xterm has completed its first fit() and has valid dimensions
+        if (!tab.isRenderReady) {
+            tab.pendingWrites.push(output);
+        } else {
+            tab.terminal.write(output);
         }
     });
     
@@ -304,7 +313,10 @@ class Tab {
         this.domElement = null;
         this.tabItemEl = null;
         this.isOpened = false; // flag to track if xterm open has been called
+        this.isRenderReady = false; // flag: fit() has completed at least once
+        this.pendingWrites = []; // buffer for writes before render is ready
         this.encoder = new TextEncoder();
+        this.decoder = new TextDecoder();
     }
     
     initializeDOM() {
@@ -379,9 +391,7 @@ class Tab {
         
         // Handle User Input directly piped to PTY
         this.terminal.onData(async (data) => {
-            console.log('[DEBUG] onData fired:', JSON.stringify(data), 'connection state:', state.connection?.state);
             if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
-                console.warn('[DEBUG] onData: connection not ready, dropping input');
                 return;
             }
             try {
@@ -395,11 +405,9 @@ class Tab {
                 }
                 const base64 = window.btoa(binary);
                 
-                console.log('[DEBUG] Sending SendInput:', this.id, 'base64:', base64, 'raw bytes:', Array.from(payload));
-                const result = await state.connection.invoke("SendInput", this.id, base64);
-                console.log('[DEBUG] SendInput result:', result);
+                await state.connection.invoke("SendInput", this.id, base64);
             } catch (e) {
-                console.error("[DEBUG] Failed to send input:", e);
+                console.error("Failed to send input:", e);
             }
         });
         
@@ -419,10 +427,33 @@ class Tab {
     fit() {
         if (!this.domElement || !this.isOpened) return;
         try {
+            if (this.domElement.offsetWidth === 0 || this.domElement.offsetHeight === 0) {
+                return;
+            }
             this.fitAddon.fit();
         } catch (e) {
             console.warn("FitAddon error:", e);
         }
+    }
+
+    scheduleFit() {
+        requestAnimationFrame(() => {
+            this.fit();
+            // Mark render-ready and flush pending writes after first fit
+            if (!this.isRenderReady) {
+                this.isRenderReady = true;
+                if (this.pendingWrites.length > 0) {
+                    const toFlush = this.pendingWrites.splice(0);
+                    for (const chunk of toFlush) {
+                        this.terminal.write(chunk);
+                    }
+                    // Refit after flushing scrollback (content may change dimensions)
+                    setTimeout(() => this.fit(), 50);
+                }
+            }
+            setTimeout(() => this.fit(), 150);
+            setTimeout(() => this.fit(), 350);
+        });
     }
     
     setActive(active) {
@@ -437,12 +468,7 @@ class Tab {
             }
             
             this.terminal.focus();
-            this.fit();
-            
-            // Delay fitting to ensure DOM reflow has completed and container size is accurate
-            setTimeout(() => {
-                this.fit();
-            }, 60);
+            this.scheduleFit();
         } else {
             this.tabItemEl.classList.remove('active');
             this.domElement.classList.remove('active');
@@ -876,201 +902,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 createNewTab();
             }
         }
-    showLoginView();
-    showToast('Secure session successfully logged out.', 'info');
-}
-
-// Global Event Listeners & Bootstrapping
-document.addEventListener('DOMContentLoaded', () => {
-    // 1. Initial login check
-    checkInitialAuth();
-    
-    // 2. Login Form submit
-    const loginForm = document.getElementById('loginForm');
-    if (loginForm) {
-        loginForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const usernameInput = document.getElementById('loginUsername');
-            const passwordInput = document.getElementById('loginPassword');
-            const errorMsg = document.getElementById('loginErrorMsg');
-            const submitBtn = document.getElementById('btnLoginSubmit');
-            
-            submitBtn.disabled = true;
-            errorMsg.classList.add('hidden');
-            
-            try {
-                const response = await fetch(API.LOGIN, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        username: usernameInput.value,
-                        password: passwordInput.value
-                    })
-                });
-                
-                if (response.ok) {
-                    const data = await response.json();
-                    state.username = data.username || usernameInput.value;
-                    state.isAdmin = data.isAdmin === true;
-                    passwordInput.value = '';
-                    showAppView();
-                } else {
-                    let errMsg = 'Authentication failed. Please verify credentials.';
-                    try {
-                        const errorData = await response.json();
-                        if (errorData && errorData.message) errMsg = errorData.message;
-                    } catch(err) {}
-                    
-                    errorMsg.querySelector('span').textContent = errMsg;
-                    errorMsg.classList.remove('hidden');
-                }
-            } catch (err) {
-                errorMsg.querySelector('span').textContent = 'Server connection failed.';
-                errorMsg.classList.remove('hidden');
-                console.error(err);
-            } finally {
-                submitBtn.disabled = false;
-            }
-        });
-    }
-    
-    // 3. Logout action
-    const logoutBtn = document.getElementById('btnLogout');
-    if (logoutBtn) {
-        logoutBtn.addEventListener('click', async () => {
-            try {
-                await fetch(API.LOGOUT, { method: 'POST' });
-            } catch (e) {
-                console.error(e);
-            }
-            logoutApp();
-        });
-    }
-    
-    // 4. Change Password Modals
-    const btnOpenChangePw = document.getElementById('btnOpenChangePassword');
-    const overlayChangePw = document.getElementById('changePasswordOverlay');
-    const btnCancelChangePw = document.getElementById('btnCancelChangePassword');
-    const changePwForm = document.getElementById('changePasswordForm');
-    
-    // Elements for mobile close automation
-    const sidebar = document.querySelector('.sidebar');
-    const sidebarOverlay = document.getElementById('sidebarOverlay');
-    
-    if (btnOpenChangePw && overlayChangePw) {
-        btnOpenChangePw.addEventListener('click', () => {
-            overlayChangePw.classList.add('active');
-            if (sidebar && sidebar.classList.contains('active')) {
-                sidebar.classList.remove('active');
-                sidebarOverlay.classList.remove('active');
-            }
-        });
-    }
-    if (btnCancelChangePw && overlayChangePw) {
-        btnCancelChangePw.addEventListener('click', () => {
-            overlayChangePw.classList.remove('active');
-            changePwForm.reset();
-            document.getElementById('changePasswordErrorMsg').classList.add('hidden');
-        });
-    }
-    if (changePwForm && overlayChangePw) {
-        changePwForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const oldPasswordInput = document.getElementById('oldPassword');
-            const newPasswordInput = document.getElementById('newPassword');
-            const confirmInput = document.getElementById('confirmNewPassword');
-            const errorMsg = document.getElementById('changePasswordErrorMsg');
-            const submitBtn = document.getElementById('btnChangePasswordSubmit');
-            
-            errorMsg.classList.add('hidden');
-            
-            if (newPasswordInput.value !== confirmInput.value) {
-                errorMsg.querySelector('span').textContent = 'Confirm password does not match.';
-                errorMsg.classList.add('hidden');
-                return;
-            }
-            
-            submitBtn.disabled = true;
-            
-            try {
-                const response = await fetch(API.CHANGE_PASSWORD, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        currentPassword: oldPasswordInput.value,
-                        newPassword: newPasswordInput.value
-                    })
-                });
-                
-                if (response.ok) {
-                    showToast('Password successfully updated.', 'success');
-                    overlayChangePw.classList.remove('active');
-                    changePwForm.reset();
-                } else {
-                    let errMsg = 'Failed to change password. Old password may be incorrect.';
-                    try {
-                        const errorData = await response.json();
-                        if (errorData && errorData.message) errMsg = errorData.message;
-                    } catch(err) {}
-                    
-                    errorMsg.querySelector('span').textContent = errMsg;
-                    errorMsg.classList.remove('hidden');
-                }
-            } catch (err) {
-                errorMsg.querySelector('span').textContent = 'Server connection failed.';
-                errorMsg.classList.remove('hidden');
-            } finally {
-                submitBtn.disabled = false;
-            }
-        });
-    }
-    
-    // 5. App Dashboard actions
-    const btnNewTab = document.getElementById('btnNewTab');
-    if (btnNewTab) {
-        btnNewTab.addEventListener('click', () => {
-            createNewTab();
-            if (sidebar && sidebar.classList.contains('active')) {
-                sidebar.classList.remove('active');
-                sidebarOverlay.classList.remove('active');
-            }
-        });
-    }
-    
-    const btnClear = document.getElementById('btnClearScreen');
-    if (btnClear) {
-        btnClear.addEventListener('click', () => clearActiveTerminal());
-    }
-    
-    const btnStop = document.getElementById('btnStopCommand');
-    if (btnStop) {
-        btnStop.addEventListener('click', () => {
-            if (state.activeTabId) {
-                abortExecution(state.activeTabId);
-            }
-        });
-    }
-    
-    // 6. Window resize handler (debounced)
-    let resizeTimeout;
-    window.addEventListener('resize', () => {
-        clearTimeout(resizeTimeout);
-        resizeTimeout = setTimeout(() => {
-            for (const tab of state.tabs.values()) {
-                tab.fit();
-            }
-        }, 150);
-    });
-    
-    // 7. Shortcut Key Bindings
-    window.addEventListener('keydown', (e) => {
-        // Prevent default browser behavior for terminal app shortcuts
-        if (e.ctrlKey && e.key === 't') { // Ctrl+T New Tab
-            e.preventDefault();
-            if (!document.getElementById('appContainer').classList.contains('hidden')) {
-                createNewTab();
-            }
-        }
     });
     
     // 8. Mobile Sidebar Toggle & Overlay logic
@@ -1086,6 +917,8 @@ document.addEventListener('DOMContentLoaded', () => {
             sidebarOverlay.classList.remove('active');
         });
     }
+
+
 
     // 9. Admin Dashboard
     const adminBtn = document.getElementById('adminBtn');

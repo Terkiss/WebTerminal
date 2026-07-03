@@ -19,7 +19,19 @@ using WebPowerShell.WebAPI.Hubs;
 using WebPowerShell.WebAPI.Middleware;
 using WebPowerShell.Application.Services;
 
+// Global unhandled exception trap — log before crash
+AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+{
+    Console.Error.WriteLine($"[FATAL] UnhandledException: {e.ExceptionObject}");
+};
+TaskScheduler.UnobservedTaskException += (sender, e) =>
+{
+    Console.Error.WriteLine($"[FATAL] UnobservedTaskException: {e.Exception}");
+    e.SetObserved();
+};
+
 var builder = WebApplication.CreateBuilder(args);
+
 
 // DB Context (AuditLog only)
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -403,7 +415,7 @@ app.MapGet("/api/weatherforecast", () =>
     {
         await userRepo.SaveAsync(new WebPowerShell.Domain.Entities.User
         {
-            Id = Guid.NewGuid(),
+            Id = Guid.Parse("a0a0a0a0-b1b1-c2c2-d3d3-e4e4e4e4e4e4"),
             Username = "terukiss",
             PasswordHash = hasher.HashPassword("dbslwms@skshgk1"),
             LastPasswordChangeDate = DateTimeOffset.UtcNow,

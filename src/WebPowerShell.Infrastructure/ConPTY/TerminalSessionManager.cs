@@ -39,7 +39,7 @@ public class TerminalSessionManager : ITerminalSessionManager
 
     public async Task<Result<TerminalSession>> CreateSessionAsync(Guid userId, Guid sessionId, TerminalLaunchOptions options)
     {
-        var process = new WindowsConPtyProcess();
+        var process = new PtyNetTerminalProcess();
         var session = new TerminalSession(sessionId, userId, process, _logger);
         
         if (!_sessions.TryAdd(sessionId, session))
