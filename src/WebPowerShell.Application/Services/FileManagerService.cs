@@ -31,6 +31,8 @@ namespace WebPowerShell.Application.Services
                 return _basePath;
             }
 
+            relativePath = relativePath.TrimStart('/', '\\');
+
             string basePathWithSeparator = _basePath.EndsWith(Path.DirectorySeparatorChar.ToString()) 
                 ? _basePath 
                 : _basePath + Path.DirectorySeparatorChar;
@@ -40,7 +42,7 @@ namespace WebPowerShell.Application.Services
                 throw new UnauthorizedAccessException("Absolute paths are not allowed.");
             }
 
-            var combined = Path.Combine(_basePath, relativePath.TrimStart('/', '\\'));
+            var combined = Path.Combine(_basePath, relativePath);
             var fullPath = Path.GetFullPath(combined);
 
             try

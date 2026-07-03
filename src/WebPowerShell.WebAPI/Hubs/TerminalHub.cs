@@ -66,15 +66,19 @@ public class TerminalHub : Hub
 
         // Launch powershell.exe natively. ConPTY will automatically translate output to UTF-8.
         var username = Context.User.Identity?.Name ?? "unknown";
+        var isAdmin = Context.User.IsInRole("Admin");
         var baseDir = AppDomain.CurrentDomain.BaseDirectory;
         var initScript = System.IO.Path.Combine(baseDir, "init.ps1");
         var homeDir = System.IO.Path.GetFullPath(System.IO.Path.Combine(Environment.CurrentDirectory, "home", username));
 
         if (!System.IO.Directory.Exists(homeDir)) System.IO.Directory.CreateDirectory(homeDir);
 
+        var args = $"-NoLogo -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"";
+        if (isAdmin) args += " -IsAdmin";
+
         var options = new TerminalLaunchOptions(
             Executable: "powershell.exe",
-            Arguments: $"-NoLogo -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"",
+            Arguments: args,
             WorkingDirectory: homeDir,
             Environment: null,
             Columns: 80,
@@ -253,15 +257,19 @@ public class TerminalHub : Hub
         }
 
         var username = Context.User.Identity?.Name ?? "unknown";
+        var isAdmin = Context.User.IsInRole("Admin");
         var baseDir = AppDomain.CurrentDomain.BaseDirectory;
         var initScript = System.IO.Path.Combine(baseDir, "init.ps1");
         var homeDir = System.IO.Path.GetFullPath(System.IO.Path.Combine(Environment.CurrentDirectory, "home", username));
 
         if (!System.IO.Directory.Exists(homeDir)) System.IO.Directory.CreateDirectory(homeDir);
 
+        var args = $"-NoLogo -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"";
+        if (isAdmin) args += " -IsAdmin";
+
         var options = new TerminalLaunchOptions(
             Executable: "powershell.exe",
-            Arguments: $"-NoLogo -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"",
+            Arguments: args,
             WorkingDirectory: workingDirectory, // use the saved working directory for restore
             Environment: null,
             Columns: 80,

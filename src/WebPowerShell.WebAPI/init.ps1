@@ -1,5 +1,6 @@
 param(
-    [string]$HomeDir
+    [string]$HomeDir,
+    [switch]$IsAdmin
 )
 $global:HomeDir = $HomeDir
 
@@ -29,7 +30,7 @@ function Set-Location-Safe {
             $resolved = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine((Get-Location).Path, $Path))
         }
 
-        if ($resolved.StartsWith($global:HomeDir, [System.StringComparison]::InvariantCultureIgnoreCase)) {
+        if ($IsAdmin -or $resolved.StartsWith($global:HomeDir, [System.StringComparison]::InvariantCultureIgnoreCase)) {
             Microsoft.PowerShell.Management\Set-Location -Path $Path
         } else {
             Write-Host "Access Denied: Cannot navigate outside home directory." -ForegroundColor Red
@@ -61,9 +62,11 @@ function prompt {
         }
     }
     
-    $username = Split-Path -Leaf $global:HomeDir
+    $username = if ($IsAdmin) { "root" } else { Split-Path -Leaf $global:HomeDir }
+    $promptSymbol = if ($IsAdmin) { "# " } else { "$ " }
+
     Write-Host "${username}@webterminal" -NoNewline -ForegroundColor Green
     Write-Host ":" -NoNewline
     Write-Host $displayPath -NoNewline -ForegroundColor Blue
-    return "$ "
+    return $promptSymbol
 }
