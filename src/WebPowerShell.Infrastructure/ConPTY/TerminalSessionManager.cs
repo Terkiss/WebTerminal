@@ -14,6 +14,7 @@ namespace WebPowerShell.Infrastructure.ConPTY;
 public class TerminalSessionManager : ITerminalSessionManager
 {
     private readonly ConcurrentDictionary<Guid, TerminalSession> _sessions = new();
+    private readonly ConcurrentDictionary<Guid, string> _callbackResults = new();
     private readonly ILogger<TerminalSessionManager> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly CancellationTokenSource _cts = new();
@@ -56,6 +57,7 @@ public class TerminalSessionManager : ITerminalSessionManager
     {
         if (_sessions.TryRemove(sessionId, out var session))
         {
+            _callbackResults.TryRemove(sessionId, out _);
             await session.DisposeAsync();
             return Result<bool>.Success(true);
         }
@@ -71,6 +73,7 @@ public class TerminalSessionManager : ITerminalSessionManager
         {
             if (_sessions.TryRemove(session.SessionId, out var removedSession))
             {
+                _callbackResults.TryRemove(session.SessionId, out _);
                 await removedSession.DisposeAsync();
                 count++;
             }
@@ -86,6 +89,20 @@ public class TerminalSessionManager : ITerminalSessionManager
     public IReadOnlyList<TerminalSession> GetSessionsForUser(Guid userId)
     {
         return _sessions.Values.Where(s => s.OwnerUserId == userId).ToList().AsReadOnly();
+    }
+
+    public void StoreCallbackResult(Guid sessionId, string result)
+    {
+        _callbackResults[sessionId] = result;
+    }
+
+    public string? RetrieveCallbackResult(Guid sessionId)
+    {
+        if (_callbackResults.TryRemove(sessionId, out var result))
+        {
+            return result;
+        }
+        return null;
     }
 
     private async Task CleanupStaleSessionsAsync()
@@ -128,5 +145,6 @@ public class TerminalSessionManager : ITerminalSessionManager
             await session.DisposeAsync();
         }
         _sessions.Clear();
+        _callbackResults.Clear();
     }
 }

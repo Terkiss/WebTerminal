@@ -1,6 +1,9 @@
 using System.Security.Claims;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using System.Text;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -18,6 +21,8 @@ using WebPowerShell.Infrastructure.ConPTY;
 using WebPowerShell.WebAPI.Hubs;
 using WebPowerShell.WebAPI.Middleware;
 using WebPowerShell.Application.Services;
+using System.Security.Cryptography;
+using Microsoft.AspNetCore.Authorization;
 
 // Global unhandled exception trap — log before crash
 AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
@@ -53,6 +58,24 @@ builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ITerminalSessionManager, TerminalSessionManager>();
 
+// JWT Configuration & Random Key Generation
+var jwtKeyString = builder.Configuration["Jwt:Key"];
+if (string.IsNullOrEmpty(jwtKeyString))
+{
+    var keyBytes = new byte[32]; // 256 bits
+    RandomNumberGenerator.Fill(keyBytes);
+    jwtKeyString = Convert.ToBase64String(keyBytes);
+}
+
+builder.Services.Configure<JwtOptions>(options =>
+{
+    options.Key = jwtKeyString;
+    options.Issuer = builder.Configuration["Jwt:Issuer"] ?? "WebTerminal";
+    options.Audience = builder.Configuration["Jwt:Audience"] ?? "WebTerminal";
+    options.ExpiryDays = int.TryParse(builder.Configuration["Jwt:ExpiryDays"], out var days) ? days : 1;
+});
+builder.Services.AddSingleton<IJwtTokenGenerator, JwtTokenGenerator>();
+
 // Handlers
 builder.Services.AddScoped<LoginCommandHandler>();
 builder.Services.AddScoped<ChangePasswordCommandHandler>();
@@ -71,8 +94,11 @@ builder.Services.AddSignalR(options =>
     options.AddFilter<HubExceptionFilter>();
 });
 
-// Cookie Authentication
-builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+// Cookie and JWT Authentication
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+})
     .AddCookie(options =>
     {
         options.Cookie.Name = ".AspNetCore.Cookies";
@@ -91,9 +117,31 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return Task.CompletedTask;
         };
+    })
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"] ?? "WebTerminal",
+            ValidAudience = builder.Configuration["Jwt:Audience"] ?? "WebTerminal",
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKeyString))
+        };
     });
 
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    var defaultPolicy = new AuthorizationPolicyBuilder(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            JwtBearerDefaults.AuthenticationScheme)
+        .RequireAuthenticatedUser()
+        .Build();
+    
+    options.DefaultPolicy = defaultPolicy;
+});
 
 // Rate Limiting (IP별 1분 내 최대 5회)
 builder.Services.AddRateLimiter(options =>
@@ -180,6 +228,24 @@ app.MapPost("/api/auth/login", async (LoginCommand command, LoginCommandHandler 
     await httpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, new ClaimsPrincipal(claimsIdentity), authProperties);
 
     return Results.Ok(response);
+})
+.RequireRateLimiting("LoginLimiter");
+
+app.MapPost("/api/auth/token", async (LoginCommand command, LoginCommandHandler handler, IJwtTokenGenerator tokenGenerator) =>
+{
+    var result = await handler.HandleAsync(command);
+    if (result.IsFailure)
+    {
+        return Results.Json(result.Failure, statusCode: StatusCodes.Status401Unauthorized);
+    }
+    
+    var tokenData = tokenGenerator.GenerateToken(result.Value!);
+    return Results.Ok(new
+    {
+        token = tokenData.Token,
+        expiration = tokenData.Expiration,
+        user = result.Value!
+    });
 })
 .RequireRateLimiting("LoginLimiter");
 

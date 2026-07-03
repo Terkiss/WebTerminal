@@ -12,4 +12,6 @@ public interface ITerminalSessionManager : IAsyncDisposable
     Task<Result<int>> CloseAllSessionsForUserAsync(Guid userId);
     IReadOnlyList<TerminalSession> GetAllSessions();
     IReadOnlyList<TerminalSession> GetSessionsForUser(Guid userId);
+    void StoreCallbackResult(Guid sessionId, string result);
+    string? RetrieveCallbackResult(Guid sessionId);
 }
