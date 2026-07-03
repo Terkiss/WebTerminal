@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard - WebTerminal</title>
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Styles -->
+    <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+    <div class="background-orbs">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+
+    <div class="dashboard-container">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-panel">
+            <div class="sidebar-header">
+                <i class="fa-solid fa-terminal logo-icon"></i>
+                <h2>WebTerminal</h2>
+                <span class="badge">Admin</span>
+            </div>
+            
+            <nav class="sidebar-nav">
+                <a href="#" class="nav-item active" data-target="system-section">
+                    <i class="fa-solid fa-server"></i>
+                    <span>System Overview</span>
+                </a>
+                <a href="#" class="nav-item" data-target="sessions-section">
+                    <i class="fa-solid fa-network-wired"></i>
+                    <span>Active Sessions</span>
+                </a>
+                <a href="#" class="nav-item" data-target="users-section">
+                    <i class="fa-solid fa-users"></i>
+                    <span>User Management</span>
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <a href="/" class="btn-return">
+                    <i class="fa-solid fa-arrow-left"></i>
+                    <span>Back to Terminal</span>
+                </a>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-header glass-panel">
+                <h1 id="page-title">System Overview</h1>
+                <div class="header-actions">
+                    <button id="btn-refresh" class="btn-icon" title="Refresh Data">
+                        <i class="fa-solid fa-rotate-right"></i>
+                    </button>
+                    <div class="admin-profile">
+                        <img src="https://ui-avatars.com/api/?name=Admin&background=random" alt="Admin Avatar" class="avatar">
+                    </div>
+                </div>
+            </header>
+
+            <div class="content-scroll-area">
+                <!-- System Section -->
+                <section id="system-section" class="content-section active">
+                    <div class="metrics-grid">
+                        <div class="metric-card glass-panel">
+                            <div class="metric-icon blue"><i class="fa-solid fa-microchip"></i></div>
+                            <div class="metric-info">
+                                <h3>CPU Usage</h3>
+                                <div class="metric-value" id="cpu-value">--%</div>
+                                <div class="progress-bar"><div class="progress-fill" id="cpu-bar" style="width: 0%"></div></div>
+                            </div>
+                        </div>
+                        <div class="metric-card glass-panel">
+                            <div class="metric-icon purple"><i class="fa-solid fa-memory"></i></div>
+                            <div class="metric-info">
+                                <h3>Memory Usage</h3>
+                                <div class="metric-value" id="ram-value">-- / -- MB</div>
+                                <div class="progress-bar"><div class="progress-fill" id="ram-bar" style="width: 0%"></div></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Sessions Section -->
+                <section id="sessions-section" class="content-section">
+                    <div class="table-card glass-panel">
+                        <div class="table-header">
+                            <h3>Active PTY Sessions</h3>
+                            <span class="badge" id="sessions-count">0</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Session ID</th>
+                                        <th>Owner</th>
+                                        <th>Created At</th>
+                                        <th>Last Activity</th>
+                                        <th>Connections</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sessions-tbody">
+                                    <tr><td colspan="6" class="text-center">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Users Section -->
+                <section id="users-section" class="content-section">
+                    <div class="table-card glass-panel">
+                        <div class="table-header">
+                            <h3>User Accounts</h3>
+                            <button class="btn-primary" id="btn-add-user">
+                                <i class="fa-solid fa-plus"></i> New User
+                            </button>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table">
+                                <thead>
+                                    <tr>
+                                        <th>Username</th>
+                                        <th>Status</th>
+                                        <th>Role</th>
+                                        <th>Created At</th>
+                                        <th>Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="users-tbody">
+                                    <tr><td colspan="5" class="text-center">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <div id="add-user-modal" class="modal">
+        <div class="modal-content glass-panel">
+            <div class="modal-header">
+                <h3>Create New User</h3>
+                <button class="close-modal"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body">
+                <form id="add-user-form">
+                    <div class="form-group">
+                        <label>Username</label>
+                        <input type="text" id="new-username" required class="glass-input">
+                    </div>
+                    <div class="form-group">
+                        <label>Password</label>
+                        <input type="password" id="new-password" required class="glass-input">
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" id="new-isadmin">
+                        <label for="new-isadmin">Is Admin</label>
+                    </div>
+                    <button type="submit" class="btn-primary full-width">Create User</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="admin.js"></script>
+</body>
+</html>
