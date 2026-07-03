@@ -22,4 +22,10 @@
     <ProjectReference Include="..\WebPowerShell.Application\WebPowerShell.Application.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="init.ps1">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

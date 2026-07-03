@@ -65,11 +65,17 @@ public class TerminalHub : Hub
         if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
         // Launch powershell.exe natively. ConPTY will automatically translate output to UTF-8.
-        // We avoid 'chcp 65001' because it breaks East Asian Character width calculation in ConPTY.
+        var username = Context.User.Identity?.Name ?? "unknown";
+        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        var initScript = System.IO.Path.Combine(baseDir, "init.ps1");
+        var homeDir = System.IO.Path.GetFullPath(System.IO.Path.Combine(Environment.CurrentDirectory, "home", username));
+
+        if (!System.IO.Directory.Exists(homeDir)) System.IO.Directory.CreateDirectory(homeDir);
+
         var options = new TerminalLaunchOptions(
             Executable: "powershell.exe",
-            Arguments: "-NoLogo -NoExit -Command \"[console]::InputEncoding=[console]::OutputEncoding=[System.Text.Encoding]::UTF8\"",
-            WorkingDirectory: Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            Arguments: $"-NoLogo -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"",
+            WorkingDirectory: homeDir,
             Environment: null,
             Columns: 80,
             Rows: 24
@@ -246,10 +252,17 @@ public class TerminalHub : Hub
             return HubResponse.Fail(AppFailure.Unauthorized);
         }
 
+        var username = Context.User.Identity?.Name ?? "unknown";
+        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        var initScript = System.IO.Path.Combine(baseDir, "init.ps1");
+        var homeDir = System.IO.Path.GetFullPath(System.IO.Path.Combine(Environment.CurrentDirectory, "home", username));
+
+        if (!System.IO.Directory.Exists(homeDir)) System.IO.Directory.CreateDirectory(homeDir);
+
         var options = new TerminalLaunchOptions(
             Executable: "powershell.exe",
-            Arguments: "-NoLogo -NoExit -Command \"[console]::InputEncoding=[console]::OutputEncoding=[System.Text.Encoding]::UTF8\"",
-            WorkingDirectory: workingDirectory,
+            Arguments: $"-NoLogo -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"",
+            WorkingDirectory: workingDirectory, // use the saved working directory for restore
             Environment: null,
             Columns: 80,
             Rows: 24
