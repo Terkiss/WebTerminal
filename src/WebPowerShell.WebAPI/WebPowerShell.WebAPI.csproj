@@ -23,6 +23,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Remove="home\**" />
+    <Content Remove="home\**" />
+    <None Remove="home\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="init.ps1">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
