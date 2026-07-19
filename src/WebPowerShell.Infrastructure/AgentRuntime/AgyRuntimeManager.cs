@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace WebPowerShell.Infrastructure.AgentRuntime;
@@ -17,11 +18,16 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
 
     private readonly AgyRuntimeProbe _runtimeProbe;
     private readonly ILogger<AgyRuntimeManager> _logger;
+    private readonly AgyRuntimeOptions _options;
 
-    public AgyRuntimeManager(AgyRuntimeProbe runtimeProbe, ILogger<AgyRuntimeManager> logger)
+    public AgyRuntimeManager(
+        AgyRuntimeProbe runtimeProbe,
+        ILogger<AgyRuntimeManager> logger,
+        IConfiguration configuration)
     {
         _runtimeProbe = runtimeProbe;
         _logger = logger;
+        _options = LoadOptions(configuration);
     }
 
     public async Task<ProviderSessionState> PrepareSessionAsync(
@@ -73,21 +79,16 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-            process.StartInfo.ArgumentList.Add("--print");
-            process.StartInfo.ArgumentList.Add(prompt);
-            process.StartInfo.ArgumentList.Add("--print-timeout");
-            process.StartInfo.ArgumentList.Add("2m");
-            if (!string.IsNullOrWhiteSpace(session.ConversationId))
-            {
-                process.StartInfo.ArgumentList.Add("--conversation");
-                process.StartInfo.ArgumentList.Add(session.ConversationId);
-            }
 
             var logPath = Path.Combine(
                 Path.GetTempPath(),
                 $"webterminal-agy-{session.SessionId:N}-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.log");
-            process.StartInfo.ArgumentList.Add("--log-file");
-            process.StartInfo.ArgumentList.Add(logPath);
+            foreach (var argument in BuildArguments(session, prompt, logPath, _options))
+            {
+                process.StartInfo.ArgumentList.Add(argument);
+            }
+
+            ApplyEnvironment(process.StartInfo, session, _options);
             session.LastAgyLogPath = logPath;
 
             var stdout = new StringBuilder();
@@ -152,6 +153,89 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
             session.UpdatedAt = DateTimeOffset.UtcNow;
             return AgyCompletionResult.Fail(ex.Message);
         }
+    }
+
+    internal static IReadOnlyList<string> BuildArguments(
+        ProviderSession session,
+        string prompt,
+        string logPath,
+        AgyRuntimeOptions options)
+    {
+        var arguments = new List<string>
+        {
+            "--print",
+            prompt,
+            "--print-timeout",
+            string.IsNullOrWhiteSpace(options.PrintTimeout) ? "2m" : options.PrintTimeout,
+            "--log-file",
+            logPath
+        };
+
+        AddOption(arguments, "--agent", options.Agent);
+        AddOption(arguments, "--model", options.Model);
+        AddOption(arguments, "--mode", options.Mode);
+        AddOption(arguments, "--project", options.Project);
+
+        foreach (var workspacePath in options.WorkspacePaths.Where(path => !string.IsNullOrWhiteSpace(path)))
+        {
+            arguments.Add("--add-dir");
+            arguments.Add(workspacePath);
+        }
+
+        if (!string.IsNullOrWhiteSpace(session.ConversationId))
+        {
+            arguments.Add("--conversation");
+            arguments.Add(session.ConversationId);
+        }
+
+        return arguments;
+    }
+
+    private static void ApplyEnvironment(ProcessStartInfo startInfo, ProviderSession session, AgyRuntimeOptions options)
+    {
+        startInfo.Environment["WEBTERMINAL_PROVIDER_SESSION_ID"] = session.SessionId.ToString();
+
+        if (!string.IsNullOrWhiteSpace(options.InternalEventEndpoint))
+        {
+            startInfo.Environment["WEBTERMINAL_AGENT_EVENT_ENDPOINT"] = options.InternalEventEndpoint;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.InternalEventSecret))
+        {
+            startInfo.Environment["WEBTERMINAL_AGENT_EVENT_SECRET"] = options.InternalEventSecret;
+        }
+    }
+
+    private static void AddOption(List<string> arguments, string name, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return;
+        }
+
+        arguments.Add(name);
+        arguments.Add(value);
+    }
+
+    private static AgyRuntimeOptions LoadOptions(IConfiguration configuration)
+    {
+        return new AgyRuntimeOptions
+        {
+            PrintTimeout = configuration["AgentRuntime:PrintTimeout"] ?? "2m",
+            Agent = configuration["AgentRuntime:Agent"],
+            Model = configuration["AgentRuntime:Model"],
+            Mode = configuration["AgentRuntime:Mode"],
+            Project = configuration["AgentRuntime:Project"],
+            InternalEventEndpoint = configuration["AgentRuntime:InternalEventEndpoint"],
+            InternalEventSecret = configuration["AgentRuntime:InternalEventSecret"],
+            WorkspacePaths = configuration
+                .GetSection("AgentRuntime:WorkspacePaths")
+                .GetChildren()
+                .Select(section => section.Value)
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!)
+                .ToArray()
+        };
     }
 
     private void UpdateConversationIdFromLog(ProviderSession session, string logPath)
