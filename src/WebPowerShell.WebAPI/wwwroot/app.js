@@ -17,8 +17,34 @@ const state = {
     activeTabId: null,
     username: 'Administrator',
     isAdmin: false,
-    preferences: null
+    preferences: null,
+    isPageSuspended: false,
+    mobileControls: {
+        ctrlPending: false,
+        collapsed: false
+    }
 };
+
+const MOBILE_OUTPUT_BUFFER_LIMIT = 256 * 1024;
+const TERMINAL_WRITE_FLUSH_MS = 8;
+const CTRL_KEY_MAP = {
+    'c': '\x03',
+    '[': '\x1b'
+};
+
+function applyCtrlModifier(sequence) {
+    const normalized = sequence.toLowerCase();
+    if (CTRL_KEY_MAP[normalized]) {
+        return CTRL_KEY_MAP[normalized];
+    }
+    if (normalized.length === 1) {
+        const code = normalized.charCodeAt(0);
+        if (code >= 97 && code <= 122) {
+            return String.fromCharCode(code - 96);
+        }
+    }
+    return sequence;
+}
 
 // Cryptographically Strong UUID Generator Fallback
 function generateUUID() {
@@ -42,6 +68,10 @@ function generateUUID() {
 
 // Toast Notification System
 function showToast(message, type = 'info', duration = 3000) {
+    if (state.isPageSuspended) {
+        return;
+    }
+
     const container = document.getElementById('toastContainer');
     const toast = document.createElement('div');
     toast.className = `toast toast-${type}`;
@@ -88,18 +118,27 @@ async function checkInitialAuth() {
 function showLoginView() {
     document.getElementById('loginOverlay').classList.add('active');
     document.getElementById('appContainer').classList.add('hidden');
+    document.getElementById('adminPanelShortcut')?.classList.add('hidden');
 }
 
-async function showAppView() {
+async function showAppView(options = {}) {
+    const { connect = true, requirePasswordChange = false } = options;
+
     document.getElementById('loginOverlay').classList.remove('active');
     document.getElementById('appContainer').classList.remove('hidden');
+
+    if (requirePasswordChange) {
+        openChangePasswordModal(true);
+    }
     
-    try {
-        const prefRes = await fetch(API.PREFERENCES);
-        if (prefRes.ok) {
-            state.preferences = await prefRes.json();
-        }
-    } catch(e) { console.warn('Failed to load preferences', e); }
+    if (connect) {
+        try {
+            const prefRes = await fetch(API.PREFERENCES);
+            if (prefRes.ok) {
+                state.preferences = await prefRes.json();
+            }
+        } catch(e) { console.warn('Failed to load preferences', e); }
+    }
     
     const displayUser = document.getElementById('welcomeUser'); // Fixed ID from index.html
     if (displayUser) {
@@ -110,8 +149,33 @@ async function showAppView() {
     if (adminBtn) {
         adminBtn.style.display = state.isAdmin ? 'inline-block' : 'none';
     }
+    const adminPanelShortcut = document.getElementById('adminPanelShortcut');
+    if (adminPanelShortcut) {
+        adminPanelShortcut.classList.toggle('hidden', !state.isAdmin);
+    }
     
-    initSignalR();
+    if (connect) {
+        initSignalR();
+    }
+}
+
+function openChangePasswordModal(required = false) {
+    const overlay = document.getElementById('changePasswordOverlay');
+    const cancelBtn = document.getElementById('btnCancelChangePassword');
+    const errorMsg = document.getElementById('changePasswordErrorMsg');
+
+    if (!overlay) return;
+
+    overlay.classList.add('active');
+    overlay.dataset.required = required ? 'true' : 'false';
+
+    if (cancelBtn) {
+        cancelBtn.disabled = required;
+    }
+    if (errorMsg && required) {
+        errorMsg.querySelector('span').textContent = 'Password change is required before opening terminal sessions.';
+        errorMsg.classList.remove('hidden');
+    }
 }
 
 // SignalR Client Logic
@@ -147,18 +211,13 @@ function initSignalR() {
             }
         }
 
-        // Buffer writes until xterm has completed its first fit() and has valid dimensions
-        if (!tab.isRenderReady) {
-            tab.pendingWrites.push(output);
-        } else {
-            tab.terminal.write(output);
-        }
+        tab.writeOrBuffer(output, true);
     });
     
     state.connection.on("TerminalExited", (tabId, exitCode) => {
         const tab = state.tabs.get(tabId);
         if (tab) {
-            tab.terminal.write(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\r\n`);
+            tab.writeOrBuffer(`\r\n\x1b[31m[Process exited with code ${exitCode}]\x1b[0m\r\n`);
             tab.isRunning = false;
         }
     });
@@ -249,22 +308,22 @@ async function restorePersistedSessions() {
                     // Just attach to the existing process
                     const response = await state.connection.invoke("AttachSession", tabId);
                     if (response && response.success === false) {
-                        tab.terminal.write(`\r\n\x1b[31m[Attach failed: ${response.errorMessage || 'Unknown'}]\x1b[0m\r\n`);
+                        tab.writeOrBuffer(`\r\n\x1b[31m[Attach failed: ${response.errorMessage || 'Unknown'}]\x1b[0m\r\n`);
                     } else {
-                        tab.terminal.write(`\x1b[32m[Live session attached — ${s.workingDirectory}]\x1b[0m\r\n`);
+                        tab.writeOrBuffer(`\x1b[32m[Live session attached — ${s.workingDirectory}]\x1b[0m\r\n`);
                     }
                 } else {
                     // Session is persisted from a previous server run — create new process at saved directory
                     const response = await state.connection.invoke("RestoreSession", tabId, s.workingDirectory);
                     if (response && response.success === false) {
-                        tab.terminal.write(`\r\n\x1b[31m[Restore failed: ${response.errorMessage || 'Unknown'}]\x1b[0m\r\n`);
+                        tab.writeOrBuffer(`\r\n\x1b[31m[Restore failed: ${response.errorMessage || 'Unknown'}]\x1b[0m\r\n`);
                     } else {
-                        tab.terminal.write(`\x1b[36m[Session restored — ${s.workingDirectory}]\x1b[0m\r\n`);
+                        tab.writeOrBuffer(`\x1b[36m[Session restored — ${s.workingDirectory}]\x1b[0m\r\n`);
                     }
                 }
             } catch (e) {
                 console.error(`Failed to connect session ${tabId}:`, e);
-                tab.terminal.write(`\r\n\x1b[31m[Connection failed: ${e.message}]\x1b[0m\r\n`);
+                tab.writeOrBuffer(`\r\n\x1b[31m[Connection failed: ${e.message}]\x1b[0m\r\n`);
             }
         }
         
@@ -297,7 +356,7 @@ async function syncActiveSessions() {
     for (const [tabId, tab] of state.tabs.entries()) {
         try {
             await state.connection.invoke("AttachSession", tabId);
-            tab.terminal.write("\r\n\x1b[33m[Connection Restored]\x1b[0m\r\n");
+            tab.writeOrBuffer("\r\n\x1b[33m[Connection Restored]\x1b[0m\r\n");
         } catch (e) {
             console.error(`Failed to sync tab ${tabId}:`, e);
         }
@@ -315,6 +374,10 @@ class Tab {
         this.isOpened = false; // flag to track if xterm open has been called
         this.isRenderReady = false; // flag: fit() has completed at least once
         this.pendingWrites = []; // buffer for writes before render is ready
+        this.suspendedWrites = [];
+        this.suspendedWriteBytes = 0;
+        this.writeQueue = [];
+        this.writeFlushTimer = null;
         this.encoder = new TextEncoder();
         this.decoder = new TextDecoder();
     }
@@ -391,28 +454,14 @@ class Tab {
         
         // Handle User Input directly piped to PTY
         this.terminal.onData(async (data) => {
-            if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
-                return;
-            }
-            try {
-                // Encode string to UTF-8 Uint8Array for binary transmission
-                const payload = this.encoder.encode(data);
-                
-                // SignalR JSON protocol expects base64 string for byte[]
-                let binary = '';
-                for (let i = 0; i < payload.length; i++) {
-                    binary += String.fromCharCode(payload[i]);
-                }
-                const base64 = window.btoa(binary);
-                
-                await state.connection.invoke("SendInput", this.id, base64);
-            } catch (e) {
-                console.error("Failed to send input:", e);
-            }
+            await this.sendInput(data);
         });
         
         // Handle Resize
         this.terminal.onResize(async (size) => {
+            if (state.isPageSuspended) {
+                return;
+            }
             if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
                 return;
             }
@@ -423,9 +472,139 @@ class Tab {
             }
         });
     }
+
+    async sendInput(data) {
+        if (state.isPageSuspended) {
+            return;
+        }
+        if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
+            return;
+        }
+        try {
+            const payload = this.encoder.encode(data);
+            let binary = '';
+            for (let i = 0; i < payload.length; i++) {
+                binary += String.fromCharCode(payload[i]);
+            }
+            const base64 = window.btoa(binary);
+            await state.connection.invoke("SendInput", this.id, base64);
+        } catch (e) {
+            console.error("Failed to send input:", e);
+        }
+    }
+
+    bufferOutput(output, replayable = true) {
+        if (output.length > MOBILE_OUTPUT_BUFFER_LIMIT) {
+            output = output.slice(output.length - MOBILE_OUTPUT_BUFFER_LIMIT);
+        }
+        this.suspendedWrites.push({ output, replayable });
+        if (replayable) {
+            this.suspendedWriteBytes += output.length;
+        }
+        while (this.suspendedWriteBytes > MOBILE_OUTPUT_BUFFER_LIMIT && this.suspendedWrites.length > 1) {
+            const removeIndex = this.suspendedWrites.findIndex((entry) => entry.replayable);
+            if (removeIndex === -1) break;
+            const removed = this.suspendedWrites.splice(removeIndex, 1)[0];
+            this.suspendedWriteBytes -= removed.output.length;
+        }
+    }
+
+    writeOrBuffer(output, replayableWhenSuspended = false) {
+        if (state.isPageSuspended || !this.isRenderReady) {
+            if (state.isPageSuspended) {
+                this.bufferOutput(output, replayableWhenSuspended);
+            } else {
+                this.pendingWrites.push(output);
+            }
+            return;
+        }
+        this.enqueueWrite(output);
+    }
+
+    enqueueWrite(output) {
+        if (!output || !this.terminal) return;
+
+        this.writeQueue.push(output);
+        if (this.writeFlushTimer !== null) {
+            return;
+        }
+
+        this.writeFlushTimer = setTimeout(() => {
+            this.writeFlushTimer = null;
+            this.flushWriteQueue();
+        }, TERMINAL_WRITE_FLUSH_MS);
+    }
+
+    flushWriteQueue() {
+        if (!this.terminal || this.writeQueue.length === 0) {
+            return;
+        }
+
+        const output = this.writeQueue.length === 1
+            ? this.writeQueue.pop()
+            : this.writeQueue.splice(0).join('');
+
+        this.terminal.write(output);
+    }
+
+    flushPendingWrites() {
+        const toFlush = [
+            ...this.pendingWrites.splice(0),
+            ...this.suspendedWrites.splice(0).map((entry) => entry.output)
+        ];
+        this.suspendedWriteBytes = 0;
+        if (toFlush.length > 0) {
+            this.enqueueWrite(toFlush.join(''));
+        }
+    }
+
+    clearReplayableSuspendedWrites() {
+        this.suspendedWrites = this.suspendedWrites.filter((entry) => !entry.replayable);
+        this.suspendedWriteBytes = 0;
+    }
+
+    setSuspended(suspended, flushBufferedOutput = true) {
+        if (!this.terminal) return;
+        this.terminal.options.cursorBlink = !suspended;
+        if (suspended) {
+            this.flushWriteQueue();
+        }
+        if (!suspended && flushBufferedOutput && this.isOpened) {
+            this.flushPendingWrites();
+        }
+    }
+
+    async attachIfConnected() {
+        if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
+            return false;
+        }
+        try {
+            await state.connection.invoke("AttachSession", this.id);
+            return true;
+        } catch (e) {
+            console.error(`Failed to attach session ${this.id}:`, e);
+            return false;
+        }
+    }
+
+    async resizeToCurrentFit() {
+        if (state.isPageSuspended || !this.terminal || !this.isOpened) {
+            return;
+        }
+        this.fit();
+        const size = { cols: this.terminal.cols, rows: this.terminal.rows };
+        try {
+            if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
+                return;
+            }
+            await state.connection.invoke("Resize", this.id, size.cols, size.rows);
+        } catch (e) {
+            console.error("Failed to send resize", e);
+        }
+    }
     
     fit() {
-        if (!this.domElement || !this.isOpened) return;
+        if (state.isPageSuspended || !this.domElement || !this.isOpened) return;
         try {
             if (this.domElement.offsetWidth === 0 || this.domElement.offsetHeight === 0) {
                 return;
@@ -437,22 +616,17 @@ class Tab {
     }
 
     scheduleFit() {
+        if (state.isPageSuspended) return;
         requestAnimationFrame(() => {
             this.fit();
             // Mark render-ready and flush pending writes after first fit
             if (!this.isRenderReady) {
                 this.isRenderReady = true;
-                if (this.pendingWrites.length > 0) {
-                    const toFlush = this.pendingWrites.splice(0);
-                    for (const chunk of toFlush) {
-                        this.terminal.write(chunk);
-                    }
-                    // Refit after flushing scrollback (content may change dimensions)
-                    setTimeout(() => this.fit(), 50);
+                if (this.pendingWrites.length > 0 || this.suspendedWrites.length > 0) {
+                    this.flushPendingWrites();
                 }
             }
-            setTimeout(() => this.fit(), 150);
-            setTimeout(() => this.fit(), 350);
+            setTimeout(() => this.fit(), 80);
         });
     }
     
@@ -467,7 +641,9 @@ class Tab {
                 this.isOpened = true;
             }
             
-            this.terminal.focus();
+            if (!state.isPageSuspended) {
+                this.terminal.focus();
+            }
             this.scheduleFit();
         } else {
             this.tabItemEl.classList.remove('active');
@@ -591,15 +767,7 @@ async function abortExecution(tabId) {
     const tab = state.tabs.get(tabId);
     if (!tab) return;
     
-    try {
-        if (state.connection && state.connection.state === signalR.HubConnectionState.Connected) {
-            // 0x03 is Ctrl+C. Base64 of [3] is "Aw=="
-            await state.connection.invoke("SendInput", tabId, "Aw==");
-        }
-    } catch (e) {
-        showToast('Failed to cancel command.', 'error');
-        console.error(e);
-    }
+    await tab.sendInput('\x03');
 }
 
 // Clear terminal viewport
@@ -608,6 +776,137 @@ function clearActiveTerminal() {
     const tab = state.tabs.get(state.activeTabId);
     if (tab && tab.terminal) {
         tab.terminal.clear();
+    }
+}
+
+function getActiveTab() {
+    if (!state.activeTabId) return null;
+    return state.tabs.get(state.activeTabId) || null;
+}
+
+async function sendMobileInput(sequence) {
+    const tab = getActiveTab();
+    if (!tab || state.isPageSuspended) return;
+
+    let input = sequence;
+    if (state.mobileControls.ctrlPending) {
+        input = applyCtrlModifier(sequence);
+        setMobileCtrlPending(false);
+    }
+
+    await tab.sendInput(input);
+    if (tab.terminal && !state.isPageSuspended) {
+        tab.terminal.focus();
+    }
+}
+
+function setMobileCtrlPending(active) {
+    state.mobileControls.ctrlPending = active;
+    const ctrlBtn = document.getElementById('mobileKeyCtrl');
+    const status = document.getElementById('mobileCtrlStatus');
+    if (ctrlBtn) {
+        ctrlBtn.classList.toggle('active', active);
+        ctrlBtn.setAttribute('aria-pressed', String(active));
+    }
+    if (status) {
+        status.textContent = active ? 'Ctrl armed' : 'Ctrl off';
+    }
+}
+
+function setMobileControlsCollapsed(collapsed) {
+    state.mobileControls.collapsed = collapsed;
+    const panel = document.getElementById('mobileKeypad');
+    const toggle = document.getElementById('mobileKeypadToggle');
+    if (!panel || !toggle) return;
+    panel.classList.toggle('collapsed', collapsed);
+    toggle.setAttribute('aria-expanded', String(!collapsed));
+    toggle.title = collapsed ? 'Open mobile keypad' : 'Close mobile keypad';
+}
+
+function initMobileKeypad() {
+    const panel = document.getElementById('mobileKeypad');
+    if (!panel) return;
+    panel.addEventListener('contextmenu', (event) => event.preventDefault());
+
+    const bindings = {
+        mobileKeyUp: '\x1b[A',
+        mobileKeyDown: '\x1b[B',
+        mobileKeyRight: '\x1b[C',
+        mobileKeyLeft: '\x1b[D',
+        mobileKeyTab: '\x09',
+        mobileKeyEsc: '\x1b',
+        mobileKeyEnter: '\x0d',
+        mobileKeyCtrlC: 'c'
+    };
+
+    for (const [id, sequence] of Object.entries(bindings)) {
+        const button = document.getElementById(id);
+        if (!button) continue;
+        button.addEventListener('pointerdown', (event) => {
+            event.preventDefault();
+            if (event.isPrimary === false) return;
+            sendMobileInput(sequence);
+        });
+    }
+
+    const ctrlBtn = document.getElementById('mobileKeyCtrl');
+    if (ctrlBtn) {
+        ctrlBtn.addEventListener('pointerdown', (event) => {
+            event.preventDefault();
+            if (event.isPrimary === false) return;
+            if (state.isPageSuspended) return;
+            setMobileCtrlPending(!state.mobileControls.ctrlPending);
+        });
+    }
+
+    const toggle = document.getElementById('mobileKeypadToggle');
+    if (toggle) {
+        toggle.addEventListener('pointerdown', (event) => {
+            event.preventDefault();
+            if (event.isPrimary === false) return;
+            if (state.isPageSuspended) return;
+            setMobileControlsCollapsed(!state.mobileControls.collapsed);
+        });
+    }
+}
+
+async function resumeVisiblePage() {
+    if (!state.isPageSuspended) return;
+    state.isPageSuspended = false;
+    document.body.classList.remove('app-suspended');
+    for (const tab of state.tabs.values()) {
+        tab.setSuspended(false, false);
+    }
+    for (const tab of state.tabs.values()) {
+        const attached = await tab.attachIfConnected();
+        if (attached) {
+            tab.clearReplayableSuspendedWrites();
+            tab.flushPendingWrites();
+        } else {
+            tab.flushPendingWrites();
+        }
+    }
+    const active = getActiveTab();
+    if (active) {
+        await active.resizeToCurrentFit();
+    }
+}
+
+function suspendHiddenPage() {
+    if (state.isPageSuspended) return;
+    state.isPageSuspended = true;
+    document.body.classList.add('app-suspended');
+    setMobileCtrlPending(false);
+    for (const tab of state.tabs.values()) {
+        tab.setSuspended(true);
+    }
+}
+
+function handlePageLifecycle() {
+    if (document.hidden) {
+        suspendHiddenPage();
+    } else {
+        resumeVisiblePage();
     }
 }
 
@@ -662,7 +961,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     state.username = data.username || usernameInput.value;
                     state.isAdmin = data.isAdmin === true;
                     passwordInput.value = '';
-                    showAppView();
+                    if (data.isPasswordExpired === true) {
+                        showAppView({ connect: false, requirePasswordChange: true });
+                    } else {
+                        showAppView();
+                    }
                 } else {
                     let errMsg = 'Authentication failed. Please verify credentials.';
                     try {
@@ -708,7 +1011,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     if (btnOpenChangePw && overlayChangePw) {
         btnOpenChangePw.addEventListener('click', () => {
-            overlayChangePw.classList.add('active');
+            openChangePasswordModal(false);
             if (sidebar && sidebar.classList.contains('active')) {
                 sidebar.classList.remove('active');
                 sidebarOverlay.classList.remove('active');
@@ -717,6 +1020,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (btnCancelChangePw && overlayChangePw) {
         btnCancelChangePw.addEventListener('click', () => {
+            if (overlayChangePw.dataset.required === 'true') {
+                return;
+            }
             overlayChangePw.classList.remove('active');
             changePwForm.reset();
             document.getElementById('changePasswordErrorMsg').classList.add('hidden');
@@ -754,12 +1060,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (response.ok) {
                     showToast('Password successfully updated.', 'success');
                     overlayChangePw.classList.remove('active');
+                    overlayChangePw.dataset.required = 'false';
+                    const cancelBtn = document.getElementById('btnCancelChangePassword');
+                    if (cancelBtn) {
+                        cancelBtn.disabled = false;
+                    }
                     changePwForm.reset();
+                    await showAppView();
                 } else {
                     let errMsg = 'Failed to change password. Old password may be incorrect.';
                     try {
                         const errorData = await response.json();
-                        if (errorData && errorData.message) errMsg = errorData.message;
+                        if (errorData && (errorData.message || errorData.Message)) {
+                            errMsg = errorData.message || errorData.Message;
+                        }
                     } catch(err) {}
                     
                     errorMsg.querySelector('span').textContent = errMsg;
@@ -885,6 +1199,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // 6. Window resize handler (debounced)
     let resizeTimeout;
     window.addEventListener('resize', () => {
+        if (state.isPageSuspended) {
+            return;
+        }
         clearTimeout(resizeTimeout);
         resizeTimeout = setTimeout(() => {
             for (const tab of state.tabs.values()) {
@@ -917,6 +1234,13 @@ document.addEventListener('DOMContentLoaded', () => {
             sidebarOverlay.classList.remove('active');
         });
     }
+
+    initMobileKeypad();
+    document.addEventListener('visibilitychange', handlePageLifecycle);
+    window.addEventListener('pagehide', suspendHiddenPage);
+    window.addEventListener('pageshow', resumeVisiblePage);
+    window.addEventListener('freeze', suspendHiddenPage);
+    window.addEventListener('resume', resumeVisiblePage);
 
 
 
@@ -1144,14 +1468,6 @@ document.addEventListener('DOMContentLoaded', () => {
             tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--danger-color);">Error connecting to server</td></tr>';
         }
     }
-
-    // Handle global window resize
-    window.addEventListener('resize', () => {
-        if (state.activeTabId) {
-            const tab = state.tabs.get(state.activeTabId);
-            if (tab) tab.fit();
-        }
-    });
 
     // File Manager Logic
     const fm = {

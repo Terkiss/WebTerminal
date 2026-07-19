@@ -53,7 +53,7 @@ public sealed class PtyNetTerminalProcess : ITerminalProcess
     {
         if (_connection == null) yield break;
 
-        var buffer = new byte[4096];
+        var buffer = new byte[16 * 1024];
         while (!cancellationToken.IsCancellationRequested)
         {
             int bytesRead;

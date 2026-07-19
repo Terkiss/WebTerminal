@@ -134,6 +134,27 @@
                     <div id="terminalContainers" class="terminal-containers-wrapper">
                         <!-- Dynamic Xterm.js target elements will be loaded here -->
                     </div>
+                    <section id="mobileKeypad" class="mobile-keypad" aria-label="Mobile terminal keypad">
+                        <button id="mobileKeypadToggle" class="mobile-keypad-toggle" type="button" aria-label="Toggle mobile keypad" aria-expanded="true" title="Close mobile keypad">
+                            <i class="fa-solid fa-gamepad"></i>
+                        </button>
+                        <div class="mobile-keypad-body">
+                            <div class="mobile-dpad" aria-label="Direction keys">
+                                <button id="mobileKeyUp" class="mobile-key mobile-key-up" type="button" aria-label="Up"><i class="fa-solid fa-chevron-up"></i></button>
+                                <button id="mobileKeyLeft" class="mobile-key mobile-key-left" type="button" aria-label="Left"><i class="fa-solid fa-chevron-left"></i></button>
+                                <button id="mobileKeyDown" class="mobile-key mobile-key-down" type="button" aria-label="Down"><i class="fa-solid fa-chevron-down"></i></button>
+                                <button id="mobileKeyRight" class="mobile-key mobile-key-right" type="button" aria-label="Right"><i class="fa-solid fa-chevron-right"></i></button>
+                            </div>
+                            <div class="mobile-key-actions">
+                                <button id="mobileKeyTab" class="mobile-key mobile-key-wide" type="button">Tab</button>
+                                <button id="mobileKeyEsc" class="mobile-key" type="button">Esc</button>
+                                <button id="mobileKeyEnter" class="mobile-key mobile-key-wide" type="button"><i class="fa-solid fa-turn-down-left"></i></button>
+                                <button id="mobileKeyCtrl" class="mobile-key" type="button" aria-pressed="false">Ctrl</button>
+                                <button id="mobileKeyCtrlC" class="mobile-key mobile-key-wide" type="button">C</button>
+                                <span id="mobileCtrlStatus" class="mobile-ctrl-status" aria-live="polite">Ctrl off</span>
+                            </div>
+                        </div>
+                    </section>
                 </div>
 
                 <!-- File Explorer Workspace -->
@@ -168,6 +189,11 @@
             </div>
         </main>
     </div>
+
+    <a id="adminPanelShortcut" class="admin-panel-shortcut hidden" href="/admin.html" title="Open Admin Panel" aria-label="Open Admin Panel">
+        <i class="fa-solid fa-shield-halved"></i>
+        <span>Admin Panel</span>
+    </a>
 
     <!-- LOGIN MODAL / OVERLAY -->
     <div id="loginOverlay" class="overlay active">

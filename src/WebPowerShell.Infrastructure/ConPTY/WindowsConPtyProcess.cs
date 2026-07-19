@@ -248,7 +248,7 @@ public class WindowsConPtyProcess : ITerminalProcess, IDisposable
     {
         if (_stdoutStream == null) yield break;
 
-        var buffer = new byte[4096];
+        var buffer = new byte[16 * 1024];
         while (!cancellationToken.IsCancellationRequested)
         {
             int bytesRead = 0;
