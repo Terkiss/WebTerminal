@@ -24,6 +24,7 @@ def main() -> int:
     parser.add_argument("--prompt", default="Use the read_text_file tool to read README.md, then summarize it in one sentence.")
     parser.add_argument("--stream", action="store_true", help="Use SSE streaming for the first provider request.")
     parser.add_argument("--strict-tools", action="store_true", help="Fail if the provider does not request a tool.")
+    parser.add_argument("--api", choices=["chat", "responses"], default="chat", help="Which API to smoke test")
     args = parser.parse_args()
 
     if not args.username or not args.password:
@@ -53,6 +54,8 @@ def main() -> int:
         smoke_args.append("--stream")
     if args.strict_tools:
         smoke_args.append("--strict-tools")
+    if args.api:
+        smoke_args.extend(["--api", args.api])
 
     original_argv = sys.argv
     try:

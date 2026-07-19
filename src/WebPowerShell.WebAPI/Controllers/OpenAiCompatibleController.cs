@@ -75,6 +75,13 @@ public sealed class OpenAiCompatibleController : ControllerBase
             return Unauthorized(new { error = new { message = "Invalid provider API key.", type = "invalid_api_key" } });
         }
 
+
+        if (request.Logprobs == true || request.ResponseFormat != null)
+        {
+            await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "UnsupportedParameter", cancellationToken);
+            return BadRequest(new { error = new { message = "Parameters 'logprobs' and 'response_format' are not supported.", type = "invalid_request_error" } });
+        }
+
         if (request.Messages == null || request.Messages.Count == 0)
         {
             await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "MessagesRequired", cancellationToken);
@@ -143,6 +150,42 @@ public sealed class OpenAiCompatibleController : ControllerBase
                 return BadRequest(new { error = new { message = "A user or tool message is required.", type = "invalid_request_error" } });
             }
 
+            if (isToolResultRequest)
+            {
+                var newToolMessages = new List<ChatMessage>();
+                for (int i = request.Messages.Count - 1; i >= 0; i--)
+                {
+                    if (string.Equals(request.Messages[i].Role, "assistant", StringComparison.OrdinalIgnoreCase)) break;
+                    if (string.Equals(request.Messages[i].Role, "tool", StringComparison.OrdinalIgnoreCase))
+                    {
+                        newToolMessages.Add(request.Messages[i]);
+                    }
+                }
+
+                var resultIds = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var tm in newToolMessages)
+                {
+                    if (string.IsNullOrWhiteSpace(tm.ToolCallId) ||
+                        !session.ExpectedToolCallIds.Contains(tm.ToolCallId) ||
+                        !resultIds.Add(tm.ToolCallId))
+                    {
+                        await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "UnknownToolCallId", cancellationToken);
+                        return BadRequest(new { error = new { message = $"Unknown or duplicate tool_call_id: {tm.ToolCallId}", type = "invalid_request_error" } });
+                    }
+                }
+
+                if (resultIds.Count != session.ExpectedToolCallIds.Count)
+                {
+                    await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "MissingToolResults", cancellationToken);
+                    return BadRequest(new { error = new { message = "All pending tool results must be provided.", type = "invalid_request_error" } });
+                }
+
+                foreach (var resultId in resultIds)
+                {
+                    session.ExpectedToolCallIds.Remove(resultId);
+                }
+            }
+
             if (!session.TryAcceptRequestId(GetIdempotencyKey()))
             {
                 await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "DuplicateRequest", cancellationToken);
@@ -173,6 +216,10 @@ public sealed class OpenAiCompatibleController : ControllerBase
             {
                 session.State = ProviderSessionState.WaitingForToolResult;
                 session.UpdatedAt = DateTimeOffset.UtcNow;
+                foreach (var tc in parsed.ToolCalls)
+                {
+                    session.ExpectedToolCallIds.Add(tc.Id);
+                }
             }
 
             await WriteAuditAsync(
@@ -267,11 +314,37 @@ public sealed class OpenAiCompatibleController : ControllerBase
             });
         }
 
-        var userPrompt = BuildAgyPromptForResponses(request, out var isToolResultRequest);
+        var userPrompt = BuildAgyPromptForResponses(request, out var isToolResultRequest, out var toolCallId);
         if (string.IsNullOrWhiteSpace(userPrompt))
         {
             await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "PromptRequired", cancellationToken);
             return BadRequest(new { error = new { message = "Input prompt is required.", type = "invalid_request_error" } });
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.PreviousResponseId))
+        {
+            if (!string.Equals(request.PreviousResponseId, session.LastResponseId, StringComparison.Ordinal))
+            {
+                await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "UnknownPreviousResponseId", cancellationToken);
+                return BadRequest(new { error = new { message = $"Unknown previous_response_id: {request.PreviousResponseId}", type = "invalid_request_error" } });
+            }
+        }
+
+        if (isToolResultRequest)
+        {
+            if (string.IsNullOrWhiteSpace(toolCallId) || !session.ExpectedToolCallIds.Contains(toolCallId))
+            {
+                await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "UnknownToolCallId", cancellationToken);
+                return BadRequest(new { error = new { message = $"Unknown or duplicate call_id: {toolCallId}", type = "invalid_request_error" } });
+            }
+
+            if (session.ExpectedToolCallIds.Count != 1)
+            {
+                await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "MissingToolResults", cancellationToken);
+                return BadRequest(new { error = new { message = "All pending tool results must be provided.", type = "invalid_request_error" } });
+            }
+
+            session.ExpectedToolCallIds.Remove(toolCallId);
         }
 
         if (!CanAcceptRequest(session.State, isToolResultRequest))
@@ -332,6 +405,10 @@ public sealed class OpenAiCompatibleController : ControllerBase
             {
                 session.State = ProviderSessionState.WaitingForToolResult;
                 session.UpdatedAt = DateTimeOffset.UtcNow;
+                foreach (var tc in parsed.ToolCalls)
+                {
+                    session.ExpectedToolCallIds.Add(tc.Id);
+                }
             }
 
             await WriteAuditAsync(
@@ -348,6 +425,7 @@ public sealed class OpenAiCompatibleController : ControllerBase
             }
 
             var responseId = $"resp_{Guid.NewGuid():N}";
+            session.LastResponseId = responseId;
             var outputItems = new List<object>();
 
             if (parsed.ToolCalls.Count > 0)
@@ -422,11 +500,11 @@ public sealed class OpenAiCompatibleController : ControllerBase
         }
     }
 
-    private static string? BuildAgyPromptForResponses(ResponsesRequest request, out bool isToolResultRequest)
+    private static string? BuildAgyPromptForResponses(ResponsesRequest request, out bool isToolResultRequest, out string? toolCallId)
     {
         isToolResultRequest = false;
+        toolCallId = null;
         string? content = null;
-        string? toolCallId = null;
         string? toolName = null;
 
         if (request.Input.ValueKind == JsonValueKind.String)
@@ -557,6 +635,12 @@ Continue from this tool result. If another tool is needed, return the tool call 
             response = responseData
         }, cancellationToken);
 
+        await WriteSseAsync(new
+        {
+            type = "response.in_progress",
+            response = responseData
+        }, cancellationToken);
+
         if (parsed.ToolCalls.Count > 0)
         {
             foreach (var toolCall in parsed.ToolCalls)
@@ -586,6 +670,32 @@ Continue from this tool result. If another tool is needed, return the tool call 
                     call_id = toolCall.Id,
                     delta = toolCall.Function.Arguments
                 }, cancellationToken);
+
+                await WriteSseAsync(new
+                {
+                    type = "response.function_call_arguments.done",
+                    response_id = responseId,
+                    item_id = itemId,
+                    output_index = 0,
+                    call_id = toolCall.Id,
+                    arguments = toolCall.Function.Arguments
+                }, cancellationToken);
+
+                await WriteSseAsync(new
+                {
+                    type = "response.output_item.done",
+                    response_id = responseId,
+                    output_index = 0,
+                    item = new
+                    {
+                        id = itemId,
+                        @object = "response.output_item",
+                        type = "function_call",
+                        name = toolCall.Function.Name,
+                        call_id = toolCall.Id,
+                        arguments = toolCall.Function.Arguments
+                    }
+                }, cancellationToken);
             }
         }
         else if (!string.IsNullOrEmpty(parsed.Content))
@@ -608,19 +718,57 @@ Continue from this tool result. If another tool is needed, return the tool call 
 
             await WriteSseAsync(new
             {
-                type = "response.output_text.delta",
+                type = "response.content_part.added",
+                response_id = responseId,
+                item_id = itemId,
+                output_index = 0,
+                content_index = 0,
+                part = new { type = "text", text = "" }
+            }, cancellationToken);
+
+            await WriteSseAsync(new
+            {
+                type = "response.text.delta",
                 response_id = responseId,
                 item_id = itemId,
                 output_index = 0,
                 content_index = 0,
                 delta = parsed.Content
             }, cancellationToken);
+
+            await WriteSseAsync(new
+            {
+                type = "response.content_part.done",
+                response_id = responseId,
+                item_id = itemId,
+                output_index = 0,
+                content_index = 0,
+                part = new { type = "text", text = parsed.Content }
+            }, cancellationToken);
+
+            await WriteSseAsync(new
+            {
+                type = "response.output_item.done",
+                response_id = responseId,
+                output_index = 0,
+                item = new
+                {
+                    id = itemId,
+                    @object = "response.output_item",
+                    type = "message",
+                    role = "assistant",
+                    content = new[]
+                    {
+                        new { type = "text", text = parsed.Content }
+                    }
+                }
+            }, cancellationToken);
         }
 
         var completedStatus = parsed.ToolCalls.Count > 0 ? "requires_action" : "completed";
         await WriteSseAsync(new
         {
-            type = "response.completed",
+            type = "response.done",
             response = new
             {
                 id = responseId,
@@ -1008,6 +1156,18 @@ Tools:
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         await Response.WriteAsync($"data: {json}\n\n", cancellationToken);
         await Response.Body.FlushAsync(cancellationToken);
+    }
+    [Route("/v1/{*path}")]
+    [HttpGet]
+    [HttpPost]
+    [HttpPut]
+    [HttpDelete]
+    [HttpPatch]
+    [HttpOptions]
+    [ApiExplorerSettings(IgnoreApi = true)]
+    public IActionResult UnsupportedApi(string path)
+    {
+        return BadRequest(new { error = new { message = $"Unsupported API endpoint: /v1/{path}", type = "invalid_request_error" } });
     }
 }
 

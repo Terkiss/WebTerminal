@@ -26,6 +26,8 @@ public sealed class ProviderSession
     public DateTimeOffset ExpiresAt { get; init; } = DateTimeOffset.UtcNow.AddHours(8);
     public string? FailureReason { get; set; }
     public SemaphoreSlim RequestLock { get; } = new(1, 1);
+    public HashSet<string> ExpectedToolCallIds { get; } = new(StringComparer.Ordinal);
+    public string? LastResponseId { get; set; }
 
     public bool IsExpired(DateTimeOffset now) => now >= ExpiresAt;
 

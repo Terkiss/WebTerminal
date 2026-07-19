@@ -1268,7 +1268,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var sse = await response.Content.ReadAsStringAsync();
         Assert.Contains("data: [DONE]", sse);
-        Assert.Contains("\"type\":\"response.output_text.delta\"", sse);
+        Assert.Contains("\"type\":\"response.text.delta\"", sse);
         Assert.Contains("\"delta\":\"streamed text\"", sse);
     }
 
@@ -1344,48 +1344,6 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
-    [Fact]
-    public async Task ResponsesApi_AcceptsPreviousResponseId()
-    {
-        SequencedRuntimeManager.Outputs.Clear();
-        SequencedRuntimeManager.Outputs.Enqueue("accepted previous id");
-        var factory = _factory.WithWebHostBuilder(builder =>
-        {
-            builder.ConfigureServices(services =>
-            {
-                services.RemoveAll<IAgyRuntimeManager>();
-                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
-            });
-        });
-        var client = factory.CreateClient();
-        const string password = "CorrectPassword123!";
-        await SeedUserAsync(factory, "provider-resp-previd-admin", password, isAdmin: true);
-
-        var loginResponse = await LoginAsync(client, "provider-resp-previd-admin", password);
-        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
-        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
-        {
-            profile = "agy-default",
-            displayName = "Resp Prev Id Provider"
-        });
-        var created = await ReadJsonAsync(createResponse);
-        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
-        {
-            Content = JsonContent.Create(new
-            {
-                model = "agy",
-                input = "hello",
-                previous_response_id = "resp_123456",
-                stream = false
-            })
-        };
-        request.Headers.Authorization = new("Bearer", apiKey);
-
-        var response = await client.SendAsync(request);
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-    }
 
     private async Task SeedUserAsync(
         WebApplicationFactory<Program> factory,
@@ -1472,6 +1430,275 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         request.Headers.Authorization = new("Bearer", apiKey);
         request.Headers.Add("Idempotency-Key", idempotencyKey);
         return request;
+    }
+
+    private async Task<(HttpClient Client, string ApiKey, ProviderSession Session, ProviderSessionRegistry Registry)> CreateTestSessionAsync(string testName)
+    {
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-" + testName + "-user", password, isAdmin: true);
+        await LoginAsync(client, "provider-" + testName + "-user", password);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Test Session"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString()!;
+        var sessionId = Guid.Parse(created.RootElement.GetProperty("sessionId").GetString()!);
+
+        var registry = factory.Services.GetRequiredService<ProviderSessionRegistry>();
+        var session = registry.GetById(sessionId)!;
+        return (client, apiKey, session, registry);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_RejectsUnknownToolCallId()
+    {
+        var (client, apiKey, session, registry) = await CreateTestSessionAsync("chat-unknown");
+        session.State = ProviderSessionState.WaitingForToolResult;
+        session.ExpectedToolCallIds.Add("call_123");
+        registry.Save(session);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new object[]
+                {
+                    new { role = "user", content = "do something" },
+                    new { role = "assistant", tool_calls = new[] { new { id = "call_123", type = "function", function = new { name = "my_tool", arguments = "{}" } } } },
+                    new { role = "tool", tool_call_id = "unknown_call", name = "my_tool", content = "result" }
+                }
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = await ReadJsonAsync(response);
+        Assert.Equal("invalid_request_error", body.RootElement.GetProperty("error").GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task ChatCompletion_RejectsDuplicateToolResult()
+    {
+        var (client, apiKey, session, registry) = await CreateTestSessionAsync("chat-dup");
+        session.State = ProviderSessionState.WaitingForToolResult;
+        session.ExpectedToolCallIds.Add("call_123");
+        registry.Save(session);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new object[]
+                {
+                    new { role = "user", content = "do something" },
+                    new { role = "assistant", tool_calls = new[] { new { id = "call_123", type = "function", function = new { name = "my_tool", arguments = "{}" } } } },
+                    new { role = "tool", tool_call_id = "call_123", name = "my_tool", content = "result" },
+                    new { role = "tool", tool_call_id = "call_123", name = "my_tool", content = "duplicate result" }
+                }
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_PreservesPendingToolCallsWhenPartialResultsRejected()
+    {
+        var (client, apiKey, session, registry) = await CreateTestSessionAsync("chat-partial");
+        session.State = ProviderSessionState.WaitingForToolResult;
+        session.ExpectedToolCallIds.Add("call_one");
+        session.ExpectedToolCallIds.Add("call_two");
+        registry.Save(session);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new object[]
+                {
+                    new { role = "user", content = "do two things" },
+                    new
+                    {
+                        role = "assistant",
+                        tool_calls = new[]
+                        {
+                            new { id = "call_one", type = "function", function = new { name = "my_tool", arguments = "{}" } },
+                            new { id = "call_two", type = "function", function = new { name = "my_tool", arguments = "{}" } }
+                        }
+                    },
+                    new { role = "tool", tool_call_id = "call_one", name = "my_tool", content = "partial result" }
+                }
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("call_one", session.ExpectedToolCallIds);
+        Assert.Contains("call_two", session.ExpectedToolCallIds);
+    }
+
+    [Fact]
+    public async Task ResponsesApi_RejectsUnknownFunctionCallOutputId()
+    {
+        var (client, apiKey, session, registry) = await CreateTestSessionAsync("resp-unknown");
+        session.State = ProviderSessionState.WaitingForToolResult;
+        session.ExpectedToolCallIds.Add("call_123");
+        registry.Save(session);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = new[] { new { type = "function_call_output", call_id = "unknown", output = "result" } }
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ResponsesApi_RejectsDuplicateFunctionCallOutput()
+    {
+        var (client, apiKey, session, registry) = await CreateTestSessionAsync("resp-dup");
+        session.State = ProviderSessionState.WaitingForToolResult;
+        registry.Save(session);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = new[] { new { type = "function_call_output", call_id = "call_123", output = "result" } }
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ResponsesApi_AllowsKnownFunctionCallOutput()
+    {
+        var (client, apiKey, session, registry) = await CreateTestSessionAsync("resp-known");
+        session.State = ProviderSessionState.WaitingForToolResult;
+        session.ExpectedToolCallIds.Add("call_123");
+        registry.Save(session);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = new[] { new { type = "function_call_output", call_id = "call_123", output = "result" } }
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ResponsesApi_PreservesPendingToolCallsWhenPartialOutputRejected()
+    {
+        var (client, apiKey, session, registry) = await CreateTestSessionAsync("resp-partial");
+        session.State = ProviderSessionState.WaitingForToolResult;
+        session.ExpectedToolCallIds.Add("call_one");
+        session.ExpectedToolCallIds.Add("call_two");
+        registry.Save(session);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = new[] { new { type = "function_call_output", call_id = "call_one", output = "partial result" } }
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("call_one", session.ExpectedToolCallIds);
+        Assert.Contains("call_two", session.ExpectedToolCallIds);
+    }
+
+    [Fact]
+    public async Task ResponsesApi_AcceptsKnownPreviousResponseId()
+    {
+        var (client, apiKey, session, registry) = await CreateTestSessionAsync("resp-prev-ok");
+        session.State = ProviderSessionState.Ready;
+        session.LastResponseId = "resp_known123";
+        registry.Save(session);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                previous_response_id = "resp_known123",
+                input = "hello"
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ResponsesApi_RejectsUnknownPreviousResponseId()
+    {
+        var (client, apiKey, session, registry) = await CreateTestSessionAsync("resp-prev-fail");
+        session.State = ProviderSessionState.Ready;
+        session.LastResponseId = "resp_known123";
+        registry.Save(session);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                previous_response_id = "resp_unknown999",
+                input = "hello"
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+        request.Headers.Add("Idempotency-Key", Guid.NewGuid().ToString());
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     private sealed class EmptyOutputRuntimeManager : IAgyRuntimeManager
@@ -1581,5 +1808,342 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
             CallCount++;
             return Task.FromResult(AgyCompletionResult.Success("should not run"));
         }
+    }
+
+    [Fact]
+    public async Task ResponsesApi_StreamsOpenAiCompatibleTextEventSequence()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("test response content");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-resp-text-admin", password, isAdmin: true);
+
+        var loginResponse = await LoginAsync(client, "provider-resp-text-admin", password);
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Resp Text Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var streamRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = "stream text please",
+                stream = true
+            })
+        };
+        streamRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var streamResponse = await client.SendAsync(streamRequest);
+        Assert.Equal(HttpStatusCode.OK, streamResponse.StatusCode);
+        var sse = await streamResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("response.created", sse);
+        Assert.Contains("response.in_progress", sse);
+        Assert.Contains("response.output_item.added", sse);
+        Assert.Contains("response.content_part.added", sse);
+        Assert.Contains("response.text.delta", sse);
+        Assert.Contains("response.content_part.done", sse);
+        Assert.Contains("response.output_item.done", sse);
+        Assert.Contains("response.done", sse);
+        Assert.Contains("data: [DONE]", sse);
+    }
+
+    [Fact]
+    public async Task ResponsesApi_StreamsOpenAiCompatibleFunctionCallEventSequence()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("""{"tool_calls":[{"id":"call_xyz","type":"function","function":{"name":"test_tool","arguments":"{\"prop\":\"val\"}"}}]}""");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-resp-tool-admin", password, isAdmin: true);
+
+        var loginResponse = await LoginAsync(client, "provider-resp-tool-admin", password);
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Resp Tool Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var streamRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = "stream tool please",
+                stream = true,
+                tools = new[] { new { type = "function", function = new { name = "test_tool" } } }
+            })
+        };
+        streamRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var streamResponse = await client.SendAsync(streamRequest);
+        Assert.Equal(HttpStatusCode.OK, streamResponse.StatusCode);
+        var sse = await streamResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("response.created", sse);
+        Assert.Contains("response.in_progress", sse);
+        Assert.Contains("response.output_item.added", sse);
+        Assert.Contains("response.function_call_arguments.delta", sse);
+        Assert.Contains("response.function_call_arguments.done", sse);
+        Assert.Contains("response.output_item.done", sse);
+        Assert.Contains("response.done", sse);
+        Assert.Contains("data: [DONE]", sse);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_StreamsOpenAiCompatibleTextSequence()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("test chat text content");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-chat-text-admin", password, isAdmin: true);
+
+        await LoginAsync(client, "provider-chat-text-admin", password);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Chat Text Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var streamRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "hello text" } },
+                stream = true
+            })
+        };
+        streamRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var streamResponse = await client.SendAsync(streamRequest);
+        Assert.Equal(HttpStatusCode.OK, streamResponse.StatusCode);
+        var sse = await streamResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("data: [DONE]", sse);
+        Assert.Contains("\"role\":\"assistant\"", sse);
+        Assert.Contains("test chat text content", sse);
+        Assert.Contains("\"finish_reason\":\"stop\"", sse);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_StreamsMultipleToolCallDeltas()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("{\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"t1\",\"arguments\":\"{}\"}},{\"id\":\"call_2\",\"type\":\"function\",\"function\":{\"name\":\"t2\",\"arguments\":\"{}\"}}]}");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-chat-multitool-admin", password, isAdmin: true);
+
+        await LoginAsync(client, "provider-chat-multitool-admin", password);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Chat MultiTool Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var streamRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "do tools" } },
+                stream = true,
+                tools = new[] { new { type = "function", function = new { name = "t1" } } }
+            })
+        };
+        streamRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var streamResponse = await client.SendAsync(streamRequest);
+        Assert.Equal(HttpStatusCode.OK, streamResponse.StatusCode);
+        var sse = await streamResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("data: [DONE]", sse);
+        Assert.Contains("\"finish_reason\":\"tool_calls\"", sse);
+        Assert.Contains("\"index\":0", sse);
+        Assert.Contains("\"index\":1", sse);
+        Assert.Contains("call_1", sse);
+        Assert.Contains("call_2", sse);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_StreamingEndsWithDone()
+    {
+        // Actually this is implicitly tested in the above tests that assert "data: [DONE]", 
+        // but we'll add a specific assertion that it's at the very end.
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("test content");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-chat-done-admin", password, isAdmin: true);
+
+        await LoginAsync(client, "provider-chat-done-admin", password);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Chat Done Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var streamRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "hello" } },
+                stream = true
+            })
+        };
+        streamRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var streamResponse = await client.SendAsync(streamRequest);
+        var sse = await streamResponse.Content.ReadAsStringAsync();
+
+        Assert.EndsWith("data: [DONE]\n\n", sse);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_RejectsUnsupportedParameters()
+    {
+        var client = _factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync("provider-policy-admin", password, isAdmin: true);
+
+        await LoginAsync(client, "provider-policy-admin", password);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Policy Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var chatRequest1 = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "hi" } },
+                logprobs = true
+            })
+        };
+        chatRequest1.Headers.Authorization = new("Bearer", apiKey);
+
+        var response1 = await client.SendAsync(chatRequest1);
+        Assert.Equal(HttpStatusCode.BadRequest, response1.StatusCode);
+        var err1 = await ReadJsonAsync(response1);
+        Assert.Equal("invalid_request_error", err1.RootElement.GetProperty("error").GetProperty("type").GetString());
+
+        using var chatRequest2 = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "hi" } },
+                response_format = new { type = "json_object" }
+            })
+        };
+        chatRequest2.Headers.Authorization = new("Bearer", apiKey);
+
+        var response2 = await client.SendAsync(chatRequest2);
+        Assert.Equal(HttpStatusCode.BadRequest, response2.StatusCode);
+        var err2 = await ReadJsonAsync(response2);
+        Assert.Equal("invalid_request_error", err2.RootElement.GetProperty("error").GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task UnsupportedApi_ReturnsInvalidRequestError()
+    {
+        var client = _factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync("provider-unsupported-api-admin", password, isAdmin: true);
+
+        await LoginAsync(client, "provider-unsupported-api-admin", password);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Unsupported API Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/embeddings")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = "hello"
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var err = await ReadJsonAsync(response);
+        Assert.Equal("invalid_request_error", err.RootElement.GetProperty("error").GetProperty("type").GetString());
+        Assert.Contains("Unsupported API endpoint", err.RootElement.GetProperty("error").GetProperty("message").GetString());
     }
 }
