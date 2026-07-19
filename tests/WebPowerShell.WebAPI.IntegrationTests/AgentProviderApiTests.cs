@@ -21,6 +21,8 @@ namespace WebPowerShell.WebAPI.IntegrationTests;
 
 public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFactory>
 {
+    private static int LoginIpCounter;
+
     private readonly TestWebApplicationFactory _factory;
     private readonly BCryptPasswordHasher _passwordHasher;
 
@@ -37,11 +39,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync("provider-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -166,11 +164,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-no-hook-secret-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-no-hook-secret-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-no-hook-secret-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -191,11 +185,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-expiry-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-expiry-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-expiry-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -241,11 +231,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync("provider-user", password, isAdmin: false);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-user",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-user", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -264,11 +250,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync("provider-rate-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-rate-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-rate-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -300,11 +282,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync("provider-events-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-events-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-events-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -448,11 +426,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-transcript-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-transcript-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-transcript-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -517,11 +491,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-nested-transcript-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-nested-transcript-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-nested-transcript-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -591,11 +561,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-tool-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-tool-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-tool-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -706,11 +672,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-stream-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-stream-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-stream-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -762,11 +724,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-content-parts-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-content-parts-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-content-parts-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -827,11 +785,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-tool-choice-none-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-tool-choice-none-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-tool-choice-none-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -879,11 +833,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-tool-choice-forced-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-tool-choice-forced-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-tool-choice-forced-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -933,11 +883,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-idempotency-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-idempotency-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-idempotency-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -981,11 +927,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-timeout-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-timeout-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-timeout-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -1031,11 +973,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-starting-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-starting-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-starting-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -1136,11 +1074,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-resp-text-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-resp-text-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-resp-text-admin", password);
         Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
 
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
@@ -1192,11 +1126,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-resp-func-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-resp-func-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-resp-func-admin", password);
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
         {
             profile = "agy-default",
@@ -1236,11 +1166,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync("provider-resp-model-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-resp-model-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-resp-model-admin", password);
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
         {
             profile = "agy-default",
@@ -1278,11 +1204,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-resp-start-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-resp-start-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-resp-start-admin", password);
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
         {
             profile = "agy-default",
@@ -1322,11 +1244,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-resp-stream-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-resp-stream-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-resp-stream-admin", password);
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
         {
             profile = "agy-default",
@@ -1361,11 +1279,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync("provider-chat-n-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-chat-n-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-chat-n-admin", password);
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
         {
             profile = "agy-default",
@@ -1406,11 +1320,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-chat-parallel-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-chat-parallel-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-chat-parallel-admin", password);
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
         {
             profile = "agy-default",
@@ -1461,6 +1371,22 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
     {
         await using var stream = await response.Content.ReadAsStreamAsync();
         return await JsonDocument.ParseAsync(stream);
+    }
+
+    private static async Task<HttpResponseMessage> LoginAsync(HttpClient client, string username, string password)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/login")
+        {
+            Content = JsonContent.Create(new LoginCommand
+            {
+                Username = username,
+                Password = password
+            })
+        };
+
+        var host = System.Threading.Interlocked.Increment(ref LoginIpCounter);
+        request.Headers.Add("X-Forwarded-For", $"10.252.{host / 250}.{host % 250 + 1}");
+        return await client.SendAsync(request);
     }
 
     private static HttpRequestMessage BuildSignedInternalEventRequest(
