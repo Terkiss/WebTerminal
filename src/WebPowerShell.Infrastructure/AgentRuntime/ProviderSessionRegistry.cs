@@ -80,10 +80,10 @@ public sealed class ProviderSessionRegistry
 
         var hash = ProviderSession.HashApiKey(apiKey);
         var now = _timeProvider.GetUtcNow();
+        SweepExpired(now);
 
         return _sessions.Values.FirstOrDefault(session =>
             session.State != ProviderSessionState.Stopped &&
-            !session.IsExpired(now) &&
             CryptographicOperations.FixedTimeEquals(
                 Convert.FromHexString(session.ApiKeyHash),
                 Convert.FromHexString(hash)));
@@ -96,8 +96,15 @@ public sealed class ProviderSessionRegistry
             return null;
         }
 
-        if (session.OwnerUserId != ownerUserId || session.IsExpired(_timeProvider.GetUtcNow()))
+        if (session.OwnerUserId != ownerUserId)
         {
+            return null;
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        if (session.IsExpired(now))
+        {
+            ExpireSession(session, now);
             return null;
         }
 
@@ -114,6 +121,7 @@ public sealed class ProviderSessionRegistry
     public IReadOnlyList<ProviderSession> GetForUser(Guid ownerUserId)
     {
         var now = _timeProvider.GetUtcNow();
+        SweepExpired(now);
         return _sessions.Values
             .Where(session => session.OwnerUserId == ownerUserId && !session.IsExpired(now))
             .OrderByDescending(session => session.CreatedAt)
@@ -153,6 +161,13 @@ public sealed class ProviderSessionRegistry
             return AgentRuntimeEventResult.SessionNotFound;
         }
 
+        var now = _timeProvider.GetUtcNow();
+        if (session.IsExpired(now))
+        {
+            ExpireSession(session, now);
+            return AgentRuntimeEventResult.SessionExpired;
+        }
+
         if (!string.IsNullOrWhiteSpace(runtimeEvent.ConversationId))
         {
             session.ConversationId = runtimeEvent.ConversationId;
@@ -177,7 +192,7 @@ public sealed class ProviderSessionRegistry
             "agy.exited" => ProviderSessionState.Stopped,
             _ => session.State
         };
-        session.UpdatedAt = _timeProvider.GetUtcNow();
+        session.UpdatedAt = now;
 
         _logger.LogInformation(
             "Accepted AGY event {EventType} for provider session {ProviderSessionId}",
@@ -209,6 +224,31 @@ public sealed class ProviderSessionRegistry
             string.Equals(candidate.ConversationId, runtimeEvent.ConversationId, StringComparison.OrdinalIgnoreCase));
     }
 
+    private void SweepExpired(DateTimeOffset now)
+    {
+        foreach (var session in _sessions.Values)
+        {
+            if (session.IsExpired(now))
+            {
+                ExpireSession(session, now);
+            }
+        }
+    }
+
+    private void ExpireSession(ProviderSession session, DateTimeOffset now)
+    {
+        if (session.State == ProviderSessionState.Stopped)
+        {
+            return;
+        }
+
+        session.State = ProviderSessionState.Stopped;
+        session.AgyProcessId = null;
+        session.UpdatedAt = now;
+        session.FailureReason = "Provider session expired.";
+        _logger.LogInformation("Expired provider session {SessionId}", session.SessionId);
+    }
+
     private static string GenerateApiKey()
     {
         Span<byte> bytes = stackalloc byte[32];
@@ -229,5 +269,6 @@ public enum AgentRuntimeEventResult
 {
     Accepted,
     Duplicate,
-    SessionNotFound
+    SessionNotFound,
+    SessionExpired
 }

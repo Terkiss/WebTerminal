@@ -95,6 +95,7 @@ public sealed class InternalAgentEventsController : ControllerBase
             AgentRuntimeEventResult.Accepted => Ok(new { status = "accepted", eventId, transcriptEntries, transcriptOffset }),
             AgentRuntimeEventResult.Duplicate => Ok(new { status = "duplicate", eventId }),
             AgentRuntimeEventResult.SessionNotFound => NotFound(new { error = "Provider session was not found." }),
+            AgentRuntimeEventResult.SessionExpired => StatusCode(StatusCodes.Status410Gone, new { error = "Provider session expired." }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }

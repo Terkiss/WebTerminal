@@ -82,6 +82,57 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task ProviderSessionExpiry_RevokesApiKeyAndRejectsHookEvents()
+    {
+        using var factory = new TestWebApplicationFactory();
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-expiry-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-expiry-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Expiring Provider"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        var sessionId = created.RootElement.GetProperty("sessionId").GetString();
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        factory.TimeProvider.Advance(TimeSpan.FromHours(9));
+
+        using var modelsRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        modelsRequest.Headers.Authorization = new("Bearer", apiKey);
+        var modelsResponse = await client.SendAsync(modelsRequest);
+        Assert.Equal(HttpStatusCode.Unauthorized, modelsResponse.StatusCode);
+
+        var listResponse = await client.GetAsync("/api/agent/provider-sessions");
+        Assert.Equal(HttpStatusCode.OK, listResponse.StatusCode);
+        var list = await ReadJsonAsync(listResponse);
+        Assert.Equal(0, list.RootElement.GetArrayLength());
+
+        var eventBody = JsonSerializer.Serialize(new
+        {
+            eventId = "evt-expired-session",
+            eventType = "conversation.started",
+            providerSessionId = sessionId,
+            conversationId = "97039a03-3777-4acd-810e-28c90013976d",
+            stepIdx = 1,
+            timestamp = factory.TimeProvider.GetUtcNow()
+        });
+        using var eventRequest = BuildSignedInternalEventRequest(eventBody, "nonce-expired-session", factory.TimeProvider.GetUtcNow());
+        var eventResponse = await client.SendAsync(eventRequest);
+        Assert.Equal(HttpStatusCode.Gone, eventResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task CreateProviderSession_RequiresAdminRole()
     {
         var client = _factory.CreateClient();
