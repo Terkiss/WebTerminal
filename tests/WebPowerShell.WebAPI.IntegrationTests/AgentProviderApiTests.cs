@@ -13,6 +13,7 @@ using NSubstitute;
 using WebPowerShell.Application.Users.Commands.Login;
 using WebPowerShell.Domain.Entities;
 using WebPowerShell.Infrastructure.AgentRuntime;
+using WebPowerShell.Infrastructure.Persistence;
 using WebPowerShell.Infrastructure.Security;
 using WebPowerShell.WebAPI.Controllers;
 
@@ -77,6 +78,25 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
                 .GetProperty("smokeTest")
                 .GetProperty("command")
                 .GetString());
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var storedSession = await dbContext.ProviderSessions.FindAsync(Guid.Parse(sessionId!));
+            Assert.NotNull(storedSession);
+            Assert.Equal(ProviderSession.HashApiKey(apiKey!), storedSession.ApiKeyHash);
+        }
+
+        var restoredRegistry = new ProviderSessionRegistry(
+            Substitute.For<ILogger<ProviderSessionRegistry>>(),
+            _factory.Services.GetRequiredService<AgyRuntimeProbe>(),
+            _factory.Services.GetRequiredService<IAgyRuntimeManager>(),
+            _factory.Services.GetRequiredService<TranscriptDeltaReader>(),
+            _factory.TimeProvider,
+            _factory.Services.GetRequiredService<IProviderSessionStore>());
+        var restoredSession = restoredRegistry.FindByApiKey(apiKey!);
+        Assert.NotNull(restoredSession);
+        Assert.Equal(Guid.Parse(sessionId!), restoredSession.SessionId);
 
         var detailResponse = await client.GetAsync($"/api/agent/provider-sessions/{sessionId}");
         Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);

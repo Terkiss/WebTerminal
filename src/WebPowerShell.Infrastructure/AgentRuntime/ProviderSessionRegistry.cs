@@ -13,19 +13,39 @@ public sealed class ProviderSessionRegistry
     private readonly IAgyRuntimeManager _runtimeManager;
     private readonly TranscriptDeltaReader _transcriptDeltaReader;
     private readonly TimeProvider _timeProvider;
+    private readonly IProviderSessionStore _sessionStore;
 
     public ProviderSessionRegistry(
         ILogger<ProviderSessionRegistry> logger,
         AgyRuntimeProbe runtimeProbe,
         IAgyRuntimeManager runtimeManager,
         TranscriptDeltaReader transcriptDeltaReader,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IProviderSessionStore sessionStore)
     {
         _logger = logger;
         _runtimeProbe = runtimeProbe;
         _runtimeManager = runtimeManager;
         _transcriptDeltaReader = transcriptDeltaReader;
         _timeProvider = timeProvider;
+        _sessionStore = sessionStore;
+
+        foreach (var session in _sessionStore.LoadActive(_timeProvider.GetUtcNow()))
+        {
+            session.AgyProcessId = null;
+            if (session.State == ProviderSessionState.Generating)
+            {
+                session.State = ProviderSessionState.WaitingForRequest;
+                session.FailureReason = "Provider session was restored after an interrupted request.";
+            }
+
+            _sessions[session.SessionId] = session;
+        }
+
+        if (!_sessions.IsEmpty)
+        {
+            _logger.LogInformation("Restored {Count} provider session(s) from persistent store.", _sessions.Count);
+        }
     }
 
     public async Task<CreateProviderSessionResult> CreateAsync(
@@ -61,6 +81,7 @@ public sealed class ProviderSessionRegistry
             session.State = ProviderSessionState.Failed;
             session.FailureReason = probe.ErrorMessage;
         }
+        _sessionStore.Save(session);
 
         _logger.LogInformation(
             "Created provider session {SessionId} for user {UserId}; AGY available: {IsAvailable}",
@@ -140,6 +161,7 @@ public sealed class ProviderSessionRegistry
         session.AgyProcessId = null;
         session.UpdatedAt = _timeProvider.GetUtcNow();
         session.FailureReason = "Provider session was revoked.";
+        _sessionStore.Save(session);
         _logger.LogInformation("Revoked provider session {SessionId} for user {UserId}", sessionId, ownerUserId);
         return true;
     }
@@ -193,6 +215,7 @@ public sealed class ProviderSessionRegistry
             _ => session.State
         };
         session.UpdatedAt = now;
+        _sessionStore.Save(session);
 
         _logger.LogInformation(
             "Accepted AGY event {EventType} for provider session {ProviderSessionId}",
@@ -206,6 +229,11 @@ public sealed class ProviderSessionRegistry
         CancellationToken cancellationToken = default)
     {
         return await _transcriptDeltaReader.ReadDeltaAsync(session, cancellationToken);
+    }
+
+    public void Save(ProviderSession session)
+    {
+        _sessionStore.Save(session);
     }
 
     private ProviderSession? GetByEvent(AgentRuntimeEvent runtimeEvent)
@@ -246,6 +274,7 @@ public sealed class ProviderSessionRegistry
         session.AgyProcessId = null;
         session.UpdatedAt = now;
         session.FailureReason = "Provider session expired.";
+        _sessionStore.Save(session);
         _logger.LogInformation("Expired provider session {SessionId}", session.SessionId);
     }
 

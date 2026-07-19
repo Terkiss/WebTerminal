@@ -225,6 +225,7 @@ public sealed class OpenAiCompatibleController : ControllerBase
         }
         finally
         {
+            _registry.Save(session);
             session.RequestLock.Release();
         }
     }

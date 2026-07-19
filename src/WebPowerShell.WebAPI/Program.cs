@@ -64,6 +64,7 @@ builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.IAgyRunt
     serviceProvider => serviceProvider.GetRequiredService<WebPowerShell.Infrastructure.AgentRuntime.AgyRuntimeManager>());
 builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.TranscriptDeltaReader>();
 builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.TranscriptResponseExtractor>();
+builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.IProviderSessionStore, WebPowerShell.Infrastructure.AgentRuntime.ProviderSessionStore>();
 builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.ProviderSessionRegistry>();
 
 // JWT Configuration & Random Key Generation

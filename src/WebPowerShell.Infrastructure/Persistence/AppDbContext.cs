@@ -11,6 +11,7 @@ namespace WebPowerShell.Infrastructure.Persistence
 
         public DbSet<User> Users => Set<User>();
         public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+        public DbSet<ProviderSessionRecord> ProviderSessions => Set<ProviderSessionRecord>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -46,6 +47,25 @@ namespace WebPowerShell.Infrastructure.Persistence
                 entity.Property(e => e.IpAddress).IsRequired().HasMaxLength(45); // IPv4 / IPv6
                 entity.Property(e => e.ResultStatus).IsRequired().HasMaxLength(50);
                 entity.Property(e => e.CorrelationId).IsRequired().HasMaxLength(100);
+            });
+
+            modelBuilder.Entity<ProviderSessionRecord>(entity =>
+            {
+                entity.HasKey(e => e.SessionId);
+                entity.HasIndex(e => e.OwnerUserId);
+                entity.HasIndex(e => e.ApiKeyHash);
+                entity.HasIndex(e => e.ExpiresAt);
+                entity.HasIndex(e => e.State);
+                entity.HasIndex(e => e.ConversationId);
+
+                entity.Property(e => e.Profile).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.DisplayName).IsRequired().HasMaxLength(200);
+                entity.Property(e => e.State).IsRequired().HasMaxLength(50);
+                entity.Property(e => e.ConversationId).HasMaxLength(100);
+                entity.Property(e => e.LastAgyLogPath).HasMaxLength(1024);
+                entity.Property(e => e.LastTranscriptPath).HasMaxLength(1024);
+                entity.Property(e => e.ApiKeyHash).IsRequired().HasMaxLength(128);
+                entity.Property(e => e.FailureReason).HasMaxLength(2048);
             });
         }
     }
