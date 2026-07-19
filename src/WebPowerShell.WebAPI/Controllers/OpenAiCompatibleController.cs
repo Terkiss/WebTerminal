@@ -247,7 +247,8 @@ public sealed class OpenAiCompatibleController : ControllerBase
             string.Equals(message.Role, "user", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(message.Role, "tool", StringComparison.OrdinalIgnoreCase));
 
-        if (lastMessage == null || string.IsNullOrWhiteSpace(lastMessage.Content))
+        var content = lastMessage?.GetContentAsString();
+        if (lastMessage == null || string.IsNullOrWhiteSpace(content))
         {
             return null;
         }
@@ -259,7 +260,7 @@ Tool result received.
 tool_call_id: {lastMessage.ToolCallId ?? "unknown"}
 name: {lastMessage.Name ?? "unknown"}
 
-{lastMessage.Content}
+{content}
 
 Continue from this tool result. If another tool is needed, return the tool call JSON format exactly.
 """;
@@ -267,7 +268,7 @@ Continue from this tool result. If another tool is needed, return the tool call 
 
         if (request.Tools is not { Count: > 0 })
         {
-            return lastMessage.Content;
+            return content;
         }
 
         const string toolCallFormat =
@@ -455,9 +456,54 @@ public sealed record ChatCompletionRequest(
 
 public sealed record ChatMessage(
     [property: JsonPropertyName("role")] string Role,
-    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("content")] JsonElement Content,
     [property: JsonPropertyName("tool_call_id")] string? ToolCallId = null,
-    [property: JsonPropertyName("name")] string? Name = null);
+    [property: JsonPropertyName("name")] string? Name = null)
+{
+    public string GetContentAsString()
+    {
+        return Content.ValueKind switch
+        {
+            JsonValueKind.String => Content.GetString() ?? string.Empty,
+            JsonValueKind.Array => string.Join(
+                Environment.NewLine,
+                Content.EnumerateArray()
+                    .Select(part => TryGetTextPart(part))
+                    .Where(text => !string.IsNullOrWhiteSpace(text))),
+            JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
+            _ => Content.GetRawText()
+        };
+    }
+
+    private static string? TryGetTextPart(JsonElement part)
+    {
+        if (part.ValueKind == JsonValueKind.String)
+        {
+            return part.GetString();
+        }
+
+        if (part.ValueKind != JsonValueKind.Object)
+        {
+            return part.GetRawText();
+        }
+
+        if (part.TryGetProperty("text", out var textElement))
+        {
+            return textElement.ValueKind == JsonValueKind.String
+                ? textElement.GetString()
+                : textElement.GetRawText();
+        }
+
+        if (part.TryGetProperty("content", out var contentElement))
+        {
+            return contentElement.ValueKind == JsonValueKind.String
+                ? contentElement.GetString()
+                : contentElement.GetRawText();
+        }
+
+        return null;
+    }
+}
 
 public sealed record ParsedAgyChatOutput(string? Content, IReadOnlyList<OpenAiToolCall> ToolCalls)
 {

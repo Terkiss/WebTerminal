@@ -54,6 +54,13 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         var apiKey = created.RootElement.GetProperty("apiKey").GetString();
         Assert.False(string.IsNullOrWhiteSpace(sessionId));
         Assert.StartsWith("wta_", apiKey);
+        Assert.Equal("agy", created.RootElement.GetProperty("harness").GetProperty("model").GetString());
+        Assert.Equal(
+            sessionId,
+            created.RootElement.GetProperty("hookBridge").GetProperty("providerSessionId").GetString());
+        Assert.Equal(
+            "tools/agent-runtime/agy_hook_bridge.py",
+            created.RootElement.GetProperty("hookBridge").GetProperty("scriptPath").GetString());
 
         using var modelsRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
         modelsRequest.Headers.Authorization = new("Bearer", apiKey);
@@ -353,6 +360,71 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
             chat.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString());
         Assert.Contains("tool_call_id: call_read", SequencedRuntimeManager.LastPrompt);
         Assert.Contains("README content from harness", SequencedRuntimeManager.LastPrompt);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_AcceptsOpenAiContentParts()
+    {
+        SequencedRuntimeManager.LastPrompt = null;
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("content parts accepted");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-content-parts-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-content-parts-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Content Parts Provider"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var chatRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[]
+                {
+                    new
+                    {
+                        role = "user",
+                        content = new object[]
+                        {
+                            new { type = "text", text = "first part" },
+                            new { type = "text", text = "second part" }
+                        }
+                    }
+                }
+            })
+        };
+        chatRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var chatResponse = await client.SendAsync(chatRequest);
+        Assert.Equal(HttpStatusCode.OK, chatResponse.StatusCode);
+        var chat = await ReadJsonAsync(chatResponse);
+        Assert.Equal(
+            "content parts accepted",
+            chat.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString());
+        Assert.Contains("first part", SequencedRuntimeManager.LastPrompt);
+        Assert.Contains("second part", SequencedRuntimeManager.LastPrompt);
     }
 
     [Fact]

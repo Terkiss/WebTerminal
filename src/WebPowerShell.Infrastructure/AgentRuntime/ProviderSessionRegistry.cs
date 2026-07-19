@@ -10,14 +10,14 @@ public sealed class ProviderSessionRegistry
     private readonly ConcurrentDictionary<string, byte> _seenEventIds = new(StringComparer.Ordinal);
     private readonly ILogger<ProviderSessionRegistry> _logger;
     private readonly AgyRuntimeProbe _runtimeProbe;
-    private readonly AgyRuntimeManager _runtimeManager;
+    private readonly IAgyRuntimeManager _runtimeManager;
     private readonly TranscriptDeltaReader _transcriptDeltaReader;
     private readonly TimeProvider _timeProvider;
 
     public ProviderSessionRegistry(
         ILogger<ProviderSessionRegistry> logger,
         AgyRuntimeProbe runtimeProbe,
-        AgyRuntimeManager runtimeManager,
+        IAgyRuntimeManager runtimeManager,
         TranscriptDeltaReader transcriptDeltaReader,
         TimeProvider timeProvider)
     {

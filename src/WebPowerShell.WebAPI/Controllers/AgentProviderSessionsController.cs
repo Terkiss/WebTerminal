@@ -38,7 +38,9 @@ public sealed class AgentProviderSessionsController : ControllerBase
             cancellationToken);
         await WriteAuditAsync(ownerUserId, "agent.provider.session.create", result.Session, "Success", cancellationToken);
 
-        var baseUrl = $"{Request.Scheme}://{Request.Host}/v1";
+        var origin = $"{Request.Scheme}://{Request.Host}";
+        var baseUrl = $"{origin}/v1";
+        var internalEventEndpoint = $"{origin}/api/internal/agent-events";
         return Ok(new
         {
             sessionId = result.Session.SessionId,
@@ -47,6 +49,24 @@ public sealed class AgentProviderSessionsController : ControllerBase
             baseUrl,
             model = "agy",
             apiKey = result.PlaintextApiKey,
+            harness = new
+            {
+                baseUrl,
+                model = "agy",
+                authorization = "Bearer <apiKey>"
+            },
+            hookBridge = new
+            {
+                endpoint = internalEventEndpoint,
+                providerSessionId = result.Session.SessionId,
+                scriptPath = "tools/agent-runtime/agy_hook_bridge.py",
+                environment = new
+                {
+                    WEBTERMINAL_AGENT_EVENT_ENDPOINT = internalEventEndpoint,
+                    WEBTERMINAL_PROVIDER_SESSION_ID = result.Session.SessionId.ToString(),
+                    WEBTERMINAL_AGENT_EVENT_SECRET = "<configured server secret>"
+                }
+            },
             expiresAt = result.Session.ExpiresAt,
             agy = new
             {
@@ -146,7 +166,16 @@ public sealed class AgentProviderSessionsController : ControllerBase
         session.CreatedAt,
         session.UpdatedAt,
         session.ExpiresAt,
-        session.FailureReason
+        session.FailureReason,
+        hookBridge = new
+        {
+            scriptPath = "tools/agent-runtime/agy_hook_bridge.py",
+            environment = new
+            {
+                WEBTERMINAL_PROVIDER_SESSION_ID = session.SessionId.ToString(),
+                WEBTERMINAL_AGENT_EVENT_SECRET = "<configured server secret>"
+            }
+        }
     };
 }
 
