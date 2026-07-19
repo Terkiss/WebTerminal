@@ -57,6 +57,14 @@ builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ITerminalSessionManager, TerminalSessionManager>();
+builder.Services.AddScoped<IAuditLogRepository, AuditLogRepository>();
+builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.AgyRuntimeProbe>();
+builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.AgyRuntimeManager>();
+builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.IAgyRuntimeManager>(
+    serviceProvider => serviceProvider.GetRequiredService<WebPowerShell.Infrastructure.AgentRuntime.AgyRuntimeManager>());
+builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.TranscriptDeltaReader>();
+builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.TranscriptResponseExtractor>();
+builder.Services.AddSingleton<WebPowerShell.Infrastructure.AgentRuntime.ProviderSessionRegistry>();
 
 // JWT Configuration & Random Key Generation
 var jwtKeyString = builder.Configuration["Jwt:Key"];
@@ -153,6 +161,20 @@ builder.Services.AddRateLimiter(options =>
         return RateLimitPartition.GetFixedWindowLimiter(ipAddress, _ => new FixedWindowRateLimiterOptions
         {
             PermitLimit = 5,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0
+        });
+    });
+    options.AddPolicy("ProviderApiLimiter", httpContext =>
+    {
+        var authorization = httpContext.Request.Headers.Authorization.ToString();
+        var partitionKey = authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            ? Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(authorization)))
+            : httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+        return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 60,
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0
         });

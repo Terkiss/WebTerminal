@@ -1,8 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -24,6 +27,14 @@ namespace WebPowerShell.WebAPI.IntegrationTests
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            builder.ConfigureAppConfiguration((_, configurationBuilder) =>
+            {
+                configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["AgentRuntime:InternalEventSecret"] = "integration-test-agent-event-secret"
+                });
+            });
+
             builder.ConfigureTestServices(services =>
             {
                 // Remove existing DbContextOptions
@@ -52,6 +63,15 @@ namespace WebPowerShell.WebAPI.IntegrationTests
             var userRepo = Services.GetRequiredService<IUserRepository>();
             var result = await userRepo.GetByIdAsync(userId);
             return result.IsSuccess ? result.Value : null;
+        }
+
+        public async Task<IReadOnlyList<AuditLog>> GetAuditLogsAsync()
+        {
+            using var scope = Services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            return await dbContext.AuditLogs
+                .OrderBy(log => log.Id)
+                .ToListAsync();
         }
     }
 }

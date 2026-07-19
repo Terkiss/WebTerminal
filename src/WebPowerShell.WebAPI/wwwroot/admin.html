@@ -38,6 +38,10 @@
                     <i class="fa-solid fa-network-wired"></i>
                     <span>Active Sessions</span>
                 </a>
+                <a href="#" class="nav-item" data-target="providers-section">
+                    <i class="fa-solid fa-plug-circle-bolt"></i>
+                    <span>Agent Providers</span>
+                </a>
                 <a href="#" class="nav-item" data-target="users-section">
                     <i class="fa-solid fa-users"></i>
                     <span>User Management</span>
@@ -112,6 +116,43 @@
                                     <tr><td colspan="6" class="text-center">Loading...</td></tr>
                                 </tbody>
                             </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Provider Sessions Section -->
+                <section id="providers-section" class="content-section">
+                    <div class="provider-layout">
+                        <div class="table-card glass-panel">
+                            <div class="table-header">
+                                <h3>AGY Provider Sessions</h3>
+                                <button class="btn-primary" id="btn-create-provider">
+                                    <i class="fa-solid fa-plus"></i> New Provider
+                                </button>
+                            </div>
+                            <div id="provider-key-card" class="provider-key-card hidden">
+                                <div>
+                                    <strong>API Key issued</strong>
+                                    <p>This key is shown once. Store it in the external harness now.</p>
+                                </div>
+                                <code id="provider-api-key"></code>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Name</th>
+                                            <th>State</th>
+                                            <th>Conversation</th>
+                                            <th>Expires</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="providers-tbody">
+                                        <tr><td colspan="5" class="text-center">Loading...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 </section>

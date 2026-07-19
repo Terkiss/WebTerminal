@@ -2,13 +2,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // Check Authentication (simple redirect if no token)
     const init = async () => {
         try {
-            await fetchSystemMetrics();
             setupNavigation();
             setupRefresh();
             setupUserModal();
+            setupProviderActions();
+            await fetchSystemMetrics();
             
             // Initial loads
             fetchSessions();
+            fetchProviders();
             fetchUsers();
             
             // Auto refresh every 5s
@@ -16,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const activeNav = document.querySelector('.nav-item.active').dataset.target;
                 if (activeNav === 'system-section') fetchSystemMetrics();
                 else if (activeNav === 'sessions-section') fetchSessions();
+                else if (activeNav === 'providers-section') fetchProviders();
             }, 5000);
             
         } catch (err) {
@@ -48,6 +51,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Fetch data when tab opens
                 if (targetId === 'system-section') fetchSystemMetrics();
                 if (targetId === 'sessions-section') fetchSessions();
+                if (targetId === 'providers-section') fetchProviders();
                 if (targetId === 'users-section') fetchUsers();
             });
         });
@@ -58,6 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const activeNav = document.querySelector('.nav-item.active').dataset.target;
             if (activeNav === 'system-section') fetchSystemMetrics();
             if (activeNav === 'sessions-section') fetchSessions();
+            if (activeNav === 'providers-section') fetchProviders();
             if (activeNav === 'users-section') fetchUsers();
         });
     };
@@ -122,6 +127,97 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (e) {
             alert('Failed to kill session');
         }
+    };
+
+    const fetchProviders = async () => {
+        const res = await fetch('/api/agent/provider-sessions');
+        if (!res.ok) throw res;
+        const providers = await res.json();
+
+        const tbody = document.getElementById('providers-tbody');
+        tbody.innerHTML = '';
+
+        if (providers.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="text-center">No provider sessions</td></tr>`;
+            return;
+        }
+
+        providers.forEach(provider => {
+            const tr = document.createElement('tr');
+            const conversation = provider.conversationId
+                ? `${provider.conversationId.substring(0, 8)}...`
+                : '--';
+            const isInactive = provider.state === 'Failed' || provider.state === 'Stopped';
+
+            tr.innerHTML = `
+                <td>
+                    <strong>${escapeHtml(provider.displayName)}</strong>
+                    <div class="muted">${escapeHtml(provider.profile)}</div>
+                </td>
+                <td><span class="status ${isInactive ? 'inactive' : 'active'}">${escapeHtml(provider.state)}</span></td>
+                <td title="${escapeHtml(provider.conversationId || '')}">${escapeHtml(conversation)}</td>
+                <td>${new Date(provider.expiresAt).toLocaleString()}</td>
+                <td>
+                    <button class="btn-danger" onclick="revokeProvider('${provider.sessionId}')">Revoke</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+    };
+
+    const setupProviderActions = () => {
+        const btnCreate = document.getElementById('btn-create-provider');
+        if (!btnCreate) return;
+
+        btnCreate.addEventListener('click', async () => {
+            btnCreate.disabled = true;
+            try {
+                const res = await fetch('/api/agent/provider-sessions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        profile: 'agy-default',
+                        displayName: `AGY Provider ${new Date().toLocaleTimeString()}`
+                    })
+                });
+
+                if (!res.ok) throw res;
+                const created = await res.json();
+                showProviderKey(created);
+                await fetchProviders();
+            } catch (e) {
+                alert('Failed to create provider session');
+            } finally {
+                btnCreate.disabled = false;
+            }
+        });
+    };
+
+    const showProviderKey = (created) => {
+        const card = document.getElementById('provider-key-card');
+        const key = document.getElementById('provider-api-key');
+        key.textContent = `${created.baseUrl}  model=${created.model}  key=${created.apiKey}`;
+        card.classList.remove('hidden');
+    };
+
+    window.revokeProvider = async (id) => {
+        if (!confirm('Revoke this provider API key and stop the session?')) return;
+        try {
+            const res = await fetch(`/api/agent/provider-sessions/${id}`, { method: 'DELETE' });
+            if (!res.ok) throw res;
+            fetchProviders();
+        } catch (e) {
+            alert('Failed to revoke provider session');
+        }
+    };
+
+    const escapeHtml = (value) => {
+        return String(value ?? '')
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#039;');
     };
 
     const fetchUsers = async () => {
