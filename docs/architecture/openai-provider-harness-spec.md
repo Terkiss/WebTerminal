@@ -1,15 +1,20 @@
-# WebTerminal OpenAI-Compatible Provider Harness Spec
+# WebTerminal OpenAI 호환 Provider Harness 명세
 
-Status: implemented contract draft  
-Audience: external agent harness developers  
-Model ID: `agy`  
+문서 상태: 구현 기준 명세 초안
+대상 독자: 외부 Agent Harness 개발자, WebTerminal 운영자
+모델 ID: `agy`
 Base path: `/v1`
 
-## Summary
+## 요약
 
-WebTerminal can expose one AGY Provider Session as an OpenAI-compatible model provider. The external harness calls WebTerminal with an API key, receives assistant text or function tool calls, executes tools in its own workspace, and sends tool results back to WebTerminal.
+WebTerminal은 하나의 AGY Provider Session을 OpenAI 호환 모델 제공자로 노출할 수 있다. 외부 하네스는 WebTerminal에서 발급받은 API Key로 `/v1` API를 호출하고, WebTerminal은 AGY 응답을 OpenAI 형식의 assistant text 또는 function tool call로 돌려준다.
 
-WebTerminal does not execute external harness tools in Provider Mode.
+중요한 원칙은 다음과 같다.
+
+- WebTerminal은 Provider Mode에서 외부 하네스의 tool을 직접 실행하지 않는다.
+- 외부 하네스가 자기 컴퓨터와 자기 workspace에서 tool을 실행한다.
+- WebTerminal은 AGY 입력, 응답 변환, tool call/result 매핑, session 상태 관리를 담당한다.
+- API Key는 생성 또는 재생성 응답에서만 평문으로 표시된다.
 
 ```mermaid
 sequenceDiagram
@@ -19,25 +24,25 @@ sequenceDiagram
     participant T as Harness Tools
     participant AGY as AGY Runtime
 
-    Admin->>WT: Create or regenerate Provider Session key
-    WT-->>Admin: baseUrl, model, one-time API key
+    Admin->>WT: Provider Session 생성 또는 API Key 재생성
+    WT-->>Admin: baseUrl, model, 1회 표시 API Key
     H->>WT: GET /v1/models
     WT-->>H: model agy
-    H->>WT: POST /v1/chat/completions or /v1/responses
-    WT->>AGY: Prompt and tool contract
-    AGY-->>WT: Text or tool_call JSON
-    WT-->>H: Assistant text or function tool call
-    H->>T: Execute tool in harness workspace
-    T-->>H: Tool output
-    H->>WT: Tool result request
-    WT->>AGY: Tool result
-    AGY-->>WT: Final text or next tool call
-    WT-->>H: Final response
+    H->>WT: POST /v1/chat/completions 또는 /v1/responses
+    WT->>AGY: prompt와 tool contract 전달
+    AGY-->>WT: text 또는 tool_call JSON
+    WT-->>H: assistant text 또는 function tool call
+    H->>T: 하네스 workspace에서 tool 실행
+    T-->>H: tool output
+    H->>WT: tool result 요청
+    WT->>AGY: tool result 전달
+    AGY-->>WT: 최종 text 또는 다음 tool call
+    WT-->>H: 최종 응답
 ```
 
-## Session Provisioning
+## Provider Session 발급
 
-Provider sessions are created by an authenticated WebTerminal admin.
+Provider Session은 WebTerminal 관리자만 생성할 수 있다.
 
 ```http
 POST /api/agent/provider-sessions
@@ -50,7 +55,7 @@ Cookie: <admin session>
 }
 ```
 
-Successful response includes a plaintext `apiKey`. This key is shown only at creation or regeneration time.
+성공 응답에는 평문 `apiKey`가 포함된다. 이 값은 생성 또는 재생성 순간에만 볼 수 있다.
 
 ```json
 {
@@ -80,22 +85,22 @@ Successful response includes a plaintext `apiKey`. This key is shown only at cre
 }
 ```
 
-### API Key Regeneration
+### API Key 재생성
 
-Admins can regenerate a provider session key.
+관리자는 기존 Provider Session의 API Key를 재생성할 수 있다.
 
 ```http
 POST /api/agent/provider-sessions/{sessionId}/api-key/regenerate
 Cookie: <admin session>
 ```
 
-The response contains a new plaintext `apiKey` and `oneTimeDisplay: true`. The old key is revoked immediately.
+응답에는 새 평문 `apiKey`와 `oneTimeDisplay: true`가 포함된다. 이전 키는 즉시 무효화된다.
 
-Session detail and list endpoints never return an existing plaintext key. They return `<apiKey>` placeholders in manifest fields.
+Session 상세 조회와 목록 조회는 기존 평문 키를 다시 반환하지 않는다. manifest 내부에도 실제 키 대신 `<apiKey>` placeholder가 들어간다.
 
-## Harness Configuration
+## 하네스 설정
 
-Use the values from the session creation or key regeneration response.
+외부 하네스는 Provider Session 생성 또는 키 재생성 응답의 값을 사용한다.
 
 ```powershell
 $env:OPENAI_BASE_URL = "https://host.example/v1"
@@ -103,35 +108,35 @@ $env:OPENAI_API_KEY = "wta_..."
 $env:OPENAI_MODEL = "agy"
 ```
 
-For clients that use WebTerminal-specific names:
+WebTerminal 전용 이름을 쓰는 클라이언트라면 아래 값도 사용할 수 있다.
 
 ```powershell
 $env:WEBTERMINAL_PROVIDER_BASE_URL = "https://host.example/v1"
 $env:WEBTERMINAL_PROVIDER_API_KEY = "wta_..."
 ```
 
-All provider API requests require:
+모든 Provider API 요청에는 다음 헤더가 필요하다.
 
 ```http
 Authorization: Bearer <provider-session-api-key>
 Content-Type: application/json
 ```
 
-Use `Idempotency-Key` for retryable generation requests. Reusing the same key within one provider session is rejected as a duplicate.
+재시도 가능한 generation 요청에는 `Idempotency-Key`를 넣는 것을 권장한다. 같은 Provider Session에서 이미 사용한 `Idempotency-Key`를 다시 보내면 중복 요청으로 거절된다.
 
 ```http
 Idempotency-Key: 2a47c8b0-6394-46e8-9f3d-3f3f8684ef1d
 ```
 
-## Supported Endpoints
+## 지원 엔드포인트
 
-| Method | Path | Purpose |
+| Method | Path | 용도 |
 | --- | --- | --- |
-| `GET` | `/v1/models` | Verify key and discover the `agy` model. |
-| `POST` | `/v1/chat/completions` | Chat Completions-compatible generation. |
-| `POST` | `/v1/responses` | Responses-compatible generation. |
+| `GET` | `/v1/models` | API Key 검증과 `agy` 모델 확인 |
+| `POST` | `/v1/chat/completions` | Chat Completions 호환 generation |
+| `POST` | `/v1/responses` | Responses 호환 generation |
 
-Unsupported `/v1/*` endpoints return `400 invalid_request_error`.
+지원하지 않는 `/v1/*` 엔드포인트는 `400 invalid_request_error`를 반환한다.
 
 ## GET /v1/models
 
@@ -140,7 +145,7 @@ curl "$OPENAI_BASE_URL/models" \
   -H "Authorization: Bearer $OPENAI_API_KEY"
 ```
 
-Response:
+응답:
 
 ```json
 {
@@ -158,7 +163,7 @@ Response:
 
 ## POST /v1/chat/completions
 
-### Text Request
+### 일반 텍스트 요청
 
 ```bash
 curl "$OPENAI_BASE_URL/chat/completions" \
@@ -173,7 +178,7 @@ curl "$OPENAI_BASE_URL/chat/completions" \
   }'
 ```
 
-Response:
+응답:
 
 ```json
 {
@@ -199,9 +204,9 @@ Response:
 }
 ```
 
-### Tool Request
+### Tool 요청
 
-The harness may send OpenAI-style function tools. If AGY decides a tool is needed, WebTerminal returns `finish_reason: "tool_calls"`.
+외부 하네스는 OpenAI 형식의 function tool 목록을 보낼 수 있다. AGY가 tool이 필요하다고 판단하면 WebTerminal은 `finish_reason: "tool_calls"` 응답을 반환한다.
 
 ```json
 {
@@ -228,7 +233,7 @@ The harness may send OpenAI-style function tools. If AGY decides a tool is neede
 }
 ```
 
-Tool call response:
+Tool call 응답:
 
 ```json
 {
@@ -255,7 +260,7 @@ Tool call response:
 }
 ```
 
-The harness must execute the tool locally and send all pending tool results back:
+외부 하네스는 tool을 자기 workspace에서 실행한 뒤, pending tool call에 대응하는 tool result를 다시 보내야 한다.
 
 ```json
 {
@@ -286,27 +291,27 @@ The harness must execute the tool locally and send all pending tool results back
 }
 ```
 
-Rules:
+규칙:
 
-- The final message must be the new `user` message or a `tool` result.
-- Tool result IDs must match pending tool call IDs.
-- Duplicate or unknown `tool_call_id` values return `400 invalid_request_error`.
-- If multiple tool calls are pending, submit all matching tool messages after the assistant tool-call message.
-- While waiting for tool results, new non-tool generation requests return `409`.
+- 마지막 message는 새 `user` message 또는 `tool` result여야 한다.
+- `tool_call_id`는 대기 중인 tool call ID와 일치해야 한다.
+- 중복되었거나 알 수 없는 `tool_call_id`는 `400 invalid_request_error`가 된다.
+- 여러 tool call이 pending이면 assistant tool-call message 뒤에 모든 대응 tool message를 보내야 한다.
+- tool result를 기다리는 상태에서 새 non-tool generation 요청을 보내면 `409`가 반환된다.
 
 ### Chat Streaming
 
-Set `stream: true`. The response is `text/event-stream` with OpenAI-style `chat.completion.chunk` payloads and ends with:
+`stream: true`를 설정하면 `text/event-stream`으로 응답한다. OpenAI 형식의 `chat.completion.chunk` payload가 전송되고 마지막은 다음과 같다.
 
 ```text
 data: [DONE]
 ```
 
-For tool calls, streaming chunks include `delta.tool_calls` and finish with `finish_reason: "tool_calls"`.
+Tool call streaming에서는 `delta.tool_calls`가 포함되고, 마지막 chunk의 `finish_reason`은 `tool_calls`가 된다.
 
 ## POST /v1/responses
 
-### Text Request
+### 일반 텍스트 요청
 
 ```bash
 curl "$OPENAI_BASE_URL/responses" \
@@ -319,7 +324,7 @@ curl "$OPENAI_BASE_URL/responses" \
   }'
 ```
 
-Response:
+응답:
 
 ```json
 {
@@ -349,7 +354,7 @@ Response:
 
 ### Responses Tool Result
 
-If the response status is `requires_action`, execute the returned function call in the harness workspace and send a `function_call_output`.
+응답 상태가 `requires_action`이면 하네스는 반환된 function call을 자기 workspace에서 실행하고 `function_call_output`을 다시 보내야 한다.
 
 ```json
 {
@@ -365,15 +370,15 @@ If the response status is `requires_action`, execute the returned function call 
 }
 ```
 
-Rules:
+규칙:
 
-- `previous_response_id`, when provided, must match the last response ID for the provider session.
-- `function_call_output.call_id` must match the pending call ID.
-- One pending Responses tool result is accepted at a time.
+- `previous_response_id`를 보낼 경우, 해당 Provider Session의 마지막 response ID와 일치해야 한다.
+- `function_call_output.call_id`는 pending call ID와 일치해야 한다.
+- Responses API에서는 한 번에 하나의 pending tool result를 받는 것을 기준으로 한다.
 
 ### Responses Streaming
 
-Set `stream: true`. The response is `text/event-stream`. Text streams emit events such as:
+`stream: true`를 설정하면 `text/event-stream`으로 응답한다. 텍스트 응답은 다음과 같은 event를 보낸다.
 
 - `response.created`
 - `response.in_progress`
@@ -384,7 +389,7 @@ Set `stream: true`. The response is `text/event-stream`. Text streams emit event
 - `response.output_item.done`
 - `response.done`
 
-Function-call streams emit:
+Function call 응답은 다음과 같은 event를 보낸다.
 
 - `response.output_item.added`
 - `response.function_call_arguments.delta`
@@ -392,20 +397,20 @@ Function-call streams emit:
 - `response.output_item.done`
 - `response.done`
 
-The stream ends with:
+stream 마지막은 다음과 같다.
 
 ```text
 data: [DONE]
 ```
 
-## Supported Parameters
+## 지원 파라미터
 
 ### Chat Completions
 
-Accepted fields:
+허용 필드:
 
-- `model`: must be `agy`
-- `messages`: required, non-empty
+- `model`: 반드시 `agy`
+- `messages`: 필수, 비어 있으면 안 됨
 - `stream`
 - `tools`
 - `tool_choice`
@@ -415,27 +420,27 @@ Accepted fields:
 - `metadata`
 - `stop`
 - `seed`
-- `n`: only `1` or omitted
+- `n`: 생략 또는 `1`만 허용
 - `top_p`
 - `presence_penalty`
 - `frequency_penalty`
 - `top_logprobs`
 - `parallel_tool_calls`
 
-Rejected fields:
+거절 필드:
 
 - `logprobs: true`
 - `response_format`
 - `n > 1`
 
-Accepted-but-best-effort fields may be parsed for compatibility but are not guaranteed to change AGY behavior.
+일부 파라미터는 클라이언트 호환성을 위해 파싱되지만, 실제 AGY 동작을 반드시 바꾼다고 보장하지 않는다.
 
 ### Responses
 
-Accepted fields:
+허용 필드:
 
-- `model`: must be `agy`
-- `input`: required
+- `model`: 반드시 `agy`
+- `input`: 필수
 - `instructions`
 - `tools`
 - `tool_choice`
@@ -447,26 +452,26 @@ Accepted fields:
 - `metadata`
 - `user`
 
-Accepted-but-best-effort fields may be parsed for compatibility but are not guaranteed to change AGY behavior.
+일부 파라미터는 클라이언트 호환성을 위해 파싱되지만, 실제 AGY 동작을 반드시 바꾼다고 보장하지 않는다.
 
-## Session State And Concurrency
+## Session 상태와 동시성
 
-One Provider Session accepts one generation request at a time.
+하나의 Provider Session은 동시에 하나의 generation 요청만 처리한다.
 
-| State | Harness behavior |
+| State | 하네스 동작 |
 | --- | --- |
-| `Ready` | Normal requests are accepted. |
-| `WaitingForRequest` | Normal requests are accepted. |
-| `Generating` | Requests return `409 session_busy`. |
-| `WaitingForToolResult` | Only matching tool-result requests are accepted. |
-| `Failed` | Requests return `503 provider_unavailable`. |
-| `Stopped` or expired | API key authentication fails. |
+| `Ready` | 일반 요청 허용 |
+| `WaitingForRequest` | 일반 요청 허용 |
+| `Generating` | 요청은 `409 session_busy` |
+| `WaitingForToolResult` | 일치하는 tool-result 요청만 허용 |
+| `Failed` | 요청은 `503 provider_unavailable` |
+| `Stopped` 또는 만료 | API Key 인증 실패 |
 
-Provider sessions expire at `expiresAt`. After expiration or revoke, the API key no longer authenticates.
+Provider Session은 `expiresAt`에 만료된다. 만료, revoke, key regeneration 이후 이전 API Key는 인증되지 않는다.
 
-## Error Contract
+## 오류 형식
 
-Errors are JSON objects compatible with OpenAI-style error envelopes where possible.
+오류는 가능한 한 OpenAI 스타일의 error envelope로 반환한다.
 
 ```json
 {
@@ -477,36 +482,38 @@ Errors are JSON objects compatible with OpenAI-style error envelopes where possi
 }
 ```
 
-| HTTP | Type | Cause |
+| HTTP | Type | 원인 |
 | --- | --- | --- |
-| `400` | `invalid_request_error` | Bad payload, unsupported model, unsupported endpoint, unknown tool call, unsupported parameter. |
-| `401` | `invalid_api_key` | Missing, expired, revoked, or invalid provider key. |
-| `403` | standard auth failure | Admin-only session management endpoint called without permission. |
-| `409` | `provider_not_ready` | Session is not ready for that request type. |
-| `409` | `session_busy` | Another request is already running or a tool result is required first. |
-| `409` | `duplicate_request` | Duplicate `Idempotency-Key` for this provider session. |
-| `429` | rate limit response | More than 60 provider API requests per minute per bearer key. |
-| `503` | `provider_unavailable` or `provider_error` | AGY runtime failed or session entered `Failed`. |
-| `504` | `provider_timeout` | AGY completion timed out. |
+| `400` | `invalid_request_error` | 잘못된 payload, 지원하지 않는 model, 지원하지 않는 endpoint, 알 수 없는 tool call, 지원하지 않는 parameter |
+| `401` | `invalid_api_key` | 누락, 만료, revoke, 재생성으로 무효화, 또는 잘못된 provider key |
+| `403` | standard auth failure | 관리자 전용 session 관리 API를 권한 없이 호출 |
+| `409` | `provider_not_ready` | 현재 session 상태가 요청 타입을 받을 수 없음 |
+| `409` | `session_busy` | 다른 요청 처리 중이거나 tool result가 먼저 필요함 |
+| `409` | `duplicate_request` | 같은 Provider Session에서 중복 `Idempotency-Key` 사용 |
+| `429` | rate limit response | bearer key 기준 분당 60회 초과 |
+| `503` | `provider_unavailable` 또는 `provider_error` | AGY runtime 실패 또는 session `Failed` 상태 |
+| `504` | `provider_timeout` | AGY completion timeout |
 
-## Rate Limit And Timeout
+## Rate Limit과 Timeout
 
-- Rate limit: 60 requests per minute per provider API key.
-- Queue limit: 0. Excess requests return `429`.
-- Default generation timeout: 150 seconds.
-- Harnesses should retry only idempotent requests and should use a fresh `Idempotency-Key` only when they intend a new generation.
+- Rate limit: Provider API Key 기준 분당 60회
+- Queue limit: 0. 초과 요청은 `429`
+- 기본 generation timeout: 150초
+- 하네스는 재시도 가능한 요청에만 retry를 적용해야 한다.
+- 새 generation을 의도하지 않는 retry라면 같은 `Idempotency-Key`를 사용해야 한다.
+- 새 generation을 의도한다면 새 `Idempotency-Key`를 사용해야 한다.
 
-## Security Requirements For Harnesses
+## 하네스 보안 요구사항
 
-- Treat `wta_...` keys as secrets.
-- Store the key only in local secret storage or process environment.
-- Do not log API keys, Authorization headers, prompts containing secrets, or tool outputs containing secrets.
-- Execute tool calls only inside the harness-owned workspace.
-- Validate tool names and arguments against the harness allowlist before execution.
-- Never execute shell commands just because AGY asked for them unless the harness policy permits that tool.
-- Assume WebTerminal will not protect the external workspace; the harness owns tool sandboxing and file permissions.
+- `wta_...` API Key는 secret으로 취급한다.
+- 키는 로컬 secret storage 또는 process environment에만 저장한다.
+- API Key, Authorization header, secret이 포함된 prompt, secret이 포함된 tool output을 로그에 남기지 않는다.
+- Tool call은 반드시 하네스가 소유한 workspace 안에서만 실행한다.
+- Tool 이름과 arguments는 하네스 allowlist와 schema로 검증한 뒤 실행한다.
+- AGY가 요청했다는 이유만으로 shell 명령을 실행하면 안 된다. 하네스 정책이 허용한 tool만 실행한다.
+- 외부 workspace의 sandboxing, file permission, command permission은 WebTerminal이 아니라 하네스 책임이다.
 
-## Minimal Harness Loop
+## 최소 Harness Loop
 
 ```pseudo
 config = read WebTerminal connection manifest
@@ -542,15 +549,15 @@ while true:
     fail("unsupported finish_reason")
 ```
 
-## Compatibility Notes
+## 호환성 범위
 
-This API is intentionally OpenAI-compatible, not a full OpenAI API implementation.
+이 API는 OpenAI 호환 API이지, OpenAI API 전체 구현이 아니다.
 
-Current compatibility boundaries:
+현재 경계:
 
-- Only model `agy` is supported.
-- Embeddings, images, audio, files, assistants, batches, fine-tuning, and other `/v1/*` endpoints are unsupported.
-- Usage token counts are currently placeholders set to `0`.
-- Some sampling parameters are accepted for client compatibility but may not affect AGY runtime behavior.
-- AGY must return tool calls in the WebTerminal-supported JSON format for reliable tool-call extraction.
-- External system/developer-message priority is not equivalent to OpenAI hosted models; AGY session and project instructions remain authoritative.
+- 지원 모델은 `agy` 하나다.
+- embeddings, images, audio, files, assistants, batches, fine-tuning 등 다른 `/v1/*` endpoint는 지원하지 않는다.
+- usage token count는 현재 `0` placeholder다.
+- 일부 sampling parameter는 client 호환성을 위해 받지만 AGY runtime 동작에 반영되지 않을 수 있다.
+- 안정적인 tool-call 추출을 위해 AGY는 WebTerminal이 지원하는 JSON 형식으로 tool call을 반환해야 한다.
+- 외부 system/developer message의 우선순위는 OpenAI hosted model과 동일하다고 볼 수 없다. AGY session과 project instruction이 계속 권위 있는 지시로 남는다.
