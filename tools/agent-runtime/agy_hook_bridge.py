@@ -71,16 +71,28 @@ def main() -> int:
 
 
 def build_event(hook_input: dict, provider_session_id: str) -> dict:
-    hook_name = str(hook_input.get("hookName") or hook_input.get("event") or "")
+    hook_name = str(
+        first_present(
+            hook_input,
+            "hookName",
+            "event",
+            "eventType",
+            "type",
+            ("hook", "name"),
+            ("hook", "type"),
+        )
+        or ""
+    )
     event_type = {
         "PreInvocation": "conversation.started",
         "PostInvocation": "invocation.completed",
         "Stop": "conversation.stopped",
     }.get(hook_name, hook_name or "agy.hook")
 
-    conversation_id = hook_input.get("conversationId")
-    step_idx = hook_input.get("stepIdx") or hook_input.get("stepIndex")
-    transcript_path = hook_input.get("transcriptPath")
+    conversation_id = first_present(hook_input, "conversationId", ("conversation", "id"), ("context", "conversationId"))
+    step_idx = first_present(hook_input, "stepIdx", "stepIndex", "invocationIndex", ("invocation", "stepIdx"))
+    transcript_path = first_present(hook_input, "transcriptPath", ("transcript", "path"), ("context", "transcriptPath"))
+    workspace_paths = first_present(hook_input, "workspacePaths", ("context", "workspacePaths"))
     event_id = hook_input.get("eventId") or normalize_event_id(conversation_id, event_type, step_idx)
 
     return {
@@ -90,8 +102,28 @@ def build_event(hook_input: dict, provider_session_id: str) -> dict:
         "conversationId": conversation_id,
         "stepIdx": step_idx,
         "transcriptPath": transcript_path,
+        "workspacePaths": workspace_paths,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+
+
+def first_present(source: dict, *keys: object) -> object:
+    for key in keys:
+        if isinstance(key, tuple):
+            value = source
+            for part in key:
+                if not isinstance(value, dict) or part not in value:
+                    value = None
+                    break
+                value = value[part]
+            if value is not None:
+                return value
+            continue
+
+        if key in source and source[key] is not None:
+            return source[key]
+
+    return None
 
 
 def normalize_event_id(conversation_id: object, event_type: str, step_idx: object) -> str:

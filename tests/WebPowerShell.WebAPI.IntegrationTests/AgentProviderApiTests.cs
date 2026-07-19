@@ -63,6 +63,12 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         Assert.Equal(
             "tools/agent-runtime/agy_hook_bridge.py",
             created.RootElement.GetProperty("hookBridge").GetProperty("scriptPath").GetString());
+        Assert.True(
+            created.RootElement
+                .GetProperty("hookBridge")
+                .GetProperty("agyHooks")
+                .GetProperty("hooks")
+                .TryGetProperty("PostInvocation", out _));
         Assert.Equal(
             apiKey,
             created.RootElement

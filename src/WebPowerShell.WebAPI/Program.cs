@@ -41,15 +41,22 @@ var builder = WebApplication.CreateBuilder(args);
 // DB Context for audit logs and agent provider session metadata.
 builder.Services.AddDbContext<AppDbContext>(options =>
 {
-    var connectionString = builder.Configuration.GetConnectionString("WebPowerShellDb");
-    if (string.IsNullOrWhiteSpace(connectionString))
+    if (builder.Environment.IsEnvironment("Testing"))
     {
-        var memoryDir = Path.Combine(AppContext.BaseDirectory, "MEMORY");
-        Directory.CreateDirectory(memoryDir);
-        connectionString = $"Data Source={Path.Combine(memoryDir, "webterminal.db")}";
+        options.UseInMemoryDatabase("WebPowerShellTestDb");
     }
+    else
+    {
+        var connectionString = builder.Configuration.GetConnectionString("WebPowerShellDb");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            var memoryDir = Path.Combine(AppContext.BaseDirectory, "MEMORY");
+            Directory.CreateDirectory(memoryDir);
+            connectionString = $"Data Source={Path.Combine(memoryDir, "webterminal.db")}";
+        }
 
-    options.UseSqlite(connectionString);
+        options.UseSqlite(connectionString);
+    }
 });
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>

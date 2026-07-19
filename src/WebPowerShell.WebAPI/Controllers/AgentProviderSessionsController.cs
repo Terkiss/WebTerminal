@@ -202,8 +202,32 @@ public sealed class AgentProviderSessionsController : ControllerBase
             ["WEBTERMINAL_PROVIDER_SESSION_ID"] = session.SessionId.ToString(),
             ["WEBTERMINAL_AGENT_EVENT_SECRET"] = "<configured server secret>"
         },
-        command = $"python tools/agent-runtime/agy_hook_bridge.py --endpoint {internalEventEndpoint} --provider-session-id {session.SessionId} --secret <configured server secret>"
+        command = BuildHookCommand(session, internalEventEndpoint),
+        agyHooks = BuildAgyHookConfig(session, internalEventEndpoint)
     };
+
+    private static string BuildHookCommand(ProviderSession session, string internalEventEndpoint) =>
+        $"python tools/agent-runtime/agy_hook_bridge.py --endpoint {internalEventEndpoint} --provider-session-id {session.SessionId} --secret <configured server secret>";
+
+    private static object BuildAgyHookConfig(ProviderSession session, string internalEventEndpoint)
+    {
+        var command = BuildHookCommand(session, internalEventEndpoint);
+        return new
+        {
+            hooks = new Dictionary<string, object>
+            {
+                ["PreInvocation"] = new { command },
+                ["PostInvocation"] = new { command },
+                ["Stop"] = new { command }
+            },
+            environment = new Dictionary<string, string>
+            {
+                ["WEBTERMINAL_AGENT_EVENT_ENDPOINT"] = internalEventEndpoint,
+                ["WEBTERMINAL_PROVIDER_SESSION_ID"] = session.SessionId.ToString(),
+                ["WEBTERMINAL_AGENT_EVENT_SECRET"] = "<configured server secret>"
+            }
+        };
+    }
 
     private static object BuildConnectionManifest(
         ProviderSession session,

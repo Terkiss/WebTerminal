@@ -254,6 +254,7 @@ document.addEventListener('DOMContentLoaded', () => {
             `WEBTERMINAL_PROVIDER_SESSION_ID=${hookEnv.WEBTERMINAL_PROVIDER_SESSION_ID || manifest.sessionId || ''}`,
             `WEBTERMINAL_AGENT_EVENT_SECRET=${hookEnv.WEBTERMINAL_AGENT_EVENT_SECRET || '<configured server secret>'}`,
             `hook_command=${hookBridge.command || ''}`,
+            `agy_hooks=${JSON.stringify(hookBridge.agyHooks || {}, null, 2)}`,
             '',
             `smoke_test=${smokeTest.command || ''}`
         ].join('\n');
