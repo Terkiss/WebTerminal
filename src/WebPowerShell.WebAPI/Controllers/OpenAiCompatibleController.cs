@@ -118,6 +118,12 @@ public sealed class OpenAiCompatibleController : ControllerBase
                 return BadRequest(new { error = new { message = "A user or tool message is required.", type = "invalid_request_error" } });
             }
 
+            if (!session.TryAcceptRequestId(GetIdempotencyKey()))
+            {
+                await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "DuplicateRequest", cancellationToken);
+                return Conflict(new { error = new { message = "Duplicate Idempotency-Key for this provider session.", type = "duplicate_request" } });
+            }
+
             var completion = await _runtimeManager.CompleteAsync(session, userPrompt, cancellationToken);
             if (!completion.IsSuccess)
             {
@@ -198,6 +204,12 @@ public sealed class OpenAiCompatibleController : ControllerBase
         return _registry.FindByApiKey(apiKey);
     }
 
+    private string? GetIdempotencyKey()
+    {
+        var idempotencyKey = Request.Headers["Idempotency-Key"].ToString();
+        return string.IsNullOrWhiteSpace(idempotencyKey) ? null : idempotencyKey;
+    }
+
     private async Task<string> ResolveCompletionTextAsync(
         ProviderSession session,
         string? stdoutText,
@@ -275,7 +287,7 @@ Continue from this tool result. If another tool is needed, return the tool call 
             """{"tool_calls":[{"id":"call_<unique>","type":"function","function":{"name":"<tool name>","arguments":"<JSON string arguments>"}}]}""";
         var toolsJson = JsonSerializer.Serialize(request.Tools, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         return $"""
-{lastMessage.Content}
+{content}
 
 Available external tools are provided below. WebTerminal cannot execute them. If a tool is required, respond with only this JSON object:
 {toolCallFormat}

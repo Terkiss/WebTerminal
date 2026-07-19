@@ -9,6 +9,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using WebPowerShell.Application.Common.Interfaces;
 using WebPowerShell.Domain.Entities;
 using WebPowerShell.Infrastructure.Persistence;
@@ -47,6 +48,10 @@ namespace WebPowerShell.WebAPI.IntegrationTests
                 // Replace TimeProvider with FakeTimeProvider
                 services.RemoveAll<TimeProvider>();
                 services.AddSingleton<TimeProvider>(TimeProvider);
+
+                // Keep MemoryPersistenceService injectable for hubs, but prevent
+                // background/final SQLite persistence from racing between test hosts.
+                services.RemoveAll<IHostedService>();
             });
         }
 

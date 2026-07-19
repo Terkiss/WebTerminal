@@ -4,6 +4,11 @@ namespace WebPowerShell.Infrastructure.AgentRuntime;
 
 public sealed class ProviderSession
 {
+    private const int MaxRememberedRequestIds = 100;
+    private readonly object _requestIdsLock = new();
+    private readonly Queue<string> _acceptedRequestIds = new();
+    private readonly HashSet<string> _acceptedRequestIdSet = new(StringComparer.Ordinal);
+
     public Guid SessionId { get; init; } = Guid.NewGuid();
     public Guid OwnerUserId { get; init; }
     public string Profile { get; init; } = "agy-default";
@@ -23,6 +28,32 @@ public sealed class ProviderSession
     public SemaphoreSlim RequestLock { get; } = new(1, 1);
 
     public bool IsExpired(DateTimeOffset now) => now >= ExpiresAt;
+
+    public bool TryAcceptRequestId(string? requestId)
+    {
+        if (string.IsNullOrWhiteSpace(requestId))
+        {
+            return true;
+        }
+
+        var normalized = requestId.Trim();
+        lock (_requestIdsLock)
+        {
+            if (!_acceptedRequestIdSet.Add(normalized))
+            {
+                return false;
+            }
+
+            _acceptedRequestIds.Enqueue(normalized);
+            while (_acceptedRequestIds.Count > MaxRememberedRequestIds)
+            {
+                var expired = _acceptedRequestIds.Dequeue();
+                _acceptedRequestIdSet.Remove(expired);
+            }
+
+            return true;
+        }
+    }
 
     public static string HashApiKey(string apiKey)
     {
