@@ -1361,11 +1361,8 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         const string password = "CorrectPassword123!";
         await SeedUserAsync(factory, "provider-resp-previd-admin", password, isAdmin: true);
 
-        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
-        {
-            Username = "provider-resp-previd-admin",
-            Password = password
-        });
+        var loginResponse = await LoginAsync(client, "provider-resp-previd-admin", password);
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
         var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
         {
             profile = "agy-default",
