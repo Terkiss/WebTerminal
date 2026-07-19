@@ -292,6 +292,42 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         using var replayRequest = BuildSignedInternalEventRequest(eventBody, "nonce-integration-1", _factory.TimeProvider.GetUtcNow());
         var replayResponse = await client.SendAsync(replayRequest);
         Assert.Equal(HttpStatusCode.Unauthorized, replayResponse.StatusCode);
+
+        var auditLogs = await _factory.GetAuditLogsAsync();
+        Assert.Contains(auditLogs, log =>
+            log.Command == "agent.provider.event.conversation.started" &&
+            log.SessionId == sessionId &&
+            log.ResultStatus == "Success" &&
+            log.CorrelationId == "evt-integration-1");
+    }
+
+    [Fact]
+    public async Task InternalAgentEvents_AuditsRejectedSessionMapping()
+    {
+        using var factory = new TestWebApplicationFactory();
+        var client = factory.CreateClient();
+        var missingSessionId = Guid.NewGuid();
+        var eventBody = JsonSerializer.Serialize(new
+        {
+            eventId = "evt-missing-session",
+            eventType = "invocation.completed",
+            providerSessionId = missingSessionId,
+            conversationId = "97039a03-3777-4acd-810e-28c90013976d",
+            stepIdx = 2,
+            timestamp = factory.TimeProvider.GetUtcNow()
+        });
+
+        using var eventRequest = BuildSignedInternalEventRequest(eventBody, "nonce-missing-session", factory.TimeProvider.GetUtcNow());
+        var eventResponse = await client.SendAsync(eventRequest);
+
+        Assert.Equal(HttpStatusCode.NotFound, eventResponse.StatusCode);
+        var auditLogs = await factory.GetAuditLogsAsync();
+        Assert.Contains(auditLogs, log =>
+            log.Command == "agent.provider.event.invocation.completed" &&
+            log.SessionId == missingSessionId.ToString() &&
+            log.ResultStatus == "Rejected" &&
+            log.ErrorCode == "SessionNotFound" &&
+            log.CorrelationId == "evt-missing-session");
     }
 
     [Fact]

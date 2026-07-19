@@ -5,6 +5,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using WebPowerShell.Application.Common.Interfaces;
+using WebPowerShell.Domain.Entities;
 using WebPowerShell.Infrastructure.AgentRuntime;
 
 namespace WebPowerShell.WebAPI.Controllers;
@@ -19,17 +21,20 @@ public sealed class InternalAgentEventsController : ControllerBase
 
     private readonly ProviderSessionRegistry _registry;
     private readonly IConfiguration _configuration;
+    private readonly IAuditLogRepository _auditLogRepository;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<InternalAgentEventsController> _logger;
 
     public InternalAgentEventsController(
         ProviderSessionRegistry registry,
         IConfiguration configuration,
+        IAuditLogRepository auditLogRepository,
         TimeProvider timeProvider,
         ILogger<InternalAgentEventsController> logger)
     {
         _registry = registry;
         _configuration = configuration;
+        _auditLogRepository = auditLogRepository;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -78,10 +83,10 @@ public sealed class InternalAgentEventsController : ControllerBase
         var result = _registry.ApplyEvent(runtimeEvent);
         var transcriptEntries = 0;
         var transcriptOffset = 0L;
+        var session = _registry.GetById(runtimeEvent.ProviderSessionId);
 
         if (result == AgentRuntimeEventResult.Accepted)
         {
-            var session = _registry.GetById(runtimeEvent.ProviderSessionId);
             if (session != null)
             {
                 var delta = await _registry.ReadTranscriptDeltaAsync(session, cancellationToken);
@@ -89,6 +94,8 @@ public sealed class InternalAgentEventsController : ControllerBase
                 transcriptOffset = delta.Offset;
             }
         }
+
+        await WriteAuditAsync(session, runtimeEvent, result, cancellationToken);
 
         return result switch
         {
@@ -169,6 +176,32 @@ public sealed class InternalAgentEventsController : ControllerBase
             ? "none"
             : request.ConversationId;
         return $"{conversation}:{request.EventType}:{step}";
+    }
+
+    private async Task WriteAuditAsync(
+        ProviderSession? session,
+        AgentRuntimeEvent runtimeEvent,
+        AgentRuntimeEventResult result,
+        CancellationToken cancellationToken)
+    {
+        var status = result == AgentRuntimeEventResult.Accepted || result == AgentRuntimeEventResult.Duplicate
+            ? "Success"
+            : "Rejected";
+
+        await _auditLogRepository.AddAsync(new AuditLog
+        {
+            UserId = session?.OwnerUserId ?? Guid.Empty,
+            UsernameSnapshot = "agent-hook",
+            SessionId = runtimeEvent.ProviderSessionId.ToString(),
+            TabId = "agent-provider",
+            Command = $"agent.provider.event.{runtimeEvent.EventType}",
+            ExecutedAt = _timeProvider.GetUtcNow(),
+            CompletedAt = _timeProvider.GetUtcNow(),
+            IpAddress = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+            ResultStatus = status,
+            ErrorCode = result == AgentRuntimeEventResult.Accepted ? null : result.ToString(),
+            CorrelationId = runtimeEvent.EventId
+        }, cancellationToken);
     }
 }
 
