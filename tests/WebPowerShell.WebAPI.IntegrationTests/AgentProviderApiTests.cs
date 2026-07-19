@@ -388,8 +388,27 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
             Content = JsonContent.Create(new
             {
                 model = "agy",
-                messages = new[]
+                messages = new object[]
                 {
+                    new { role = "user", content = "read README.md" },
+                    new
+                    {
+                        role = "assistant",
+                        content = (string?)null,
+                        tool_calls = new[]
+                        {
+                            new
+                            {
+                                id = "call_read",
+                                type = "function",
+                                function = new
+                                {
+                                    name = "read_text_file",
+                                    arguments = """{"path":"README.md"}"""
+                                }
+                            }
+                        }
+                    },
                     new
                     {
                         role = "tool",
@@ -410,6 +429,8 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
             "tool result accepted",
             chat.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString());
         Assert.Contains("tool_call_id: call_read", SequencedRuntimeManager.LastPrompt);
+        Assert.Contains("Original tool call:", SequencedRuntimeManager.LastPrompt);
+        Assert.Contains("read_text_file", SequencedRuntimeManager.LastPrompt);
         Assert.Contains("README content from harness", SequencedRuntimeManager.LastPrompt);
     }
 

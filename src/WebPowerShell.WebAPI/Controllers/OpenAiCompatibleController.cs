@@ -267,11 +267,21 @@ public sealed class OpenAiCompatibleController : ControllerBase
 
         if (string.Equals(lastMessage.Role, "tool", StringComparison.OrdinalIgnoreCase))
         {
+            var matchingToolCall = FindMatchingToolCall(request, lastMessage.ToolCallId);
+            var toolCallContext = matchingToolCall.HasValue
+                ? $"""
+Original tool call:
+{matchingToolCall.Value.GetRawText()}
+
+"""
+                : string.Empty;
+
             return $"""
 Tool result received.
 tool_call_id: {lastMessage.ToolCallId ?? "unknown"}
 name: {lastMessage.Name ?? "unknown"}
 
+{toolCallContext}
 {content}
 
 Continue from this tool result. If another tool is needed, return the tool call JSON format exactly.
@@ -295,6 +305,35 @@ Available external tools are provided below. WebTerminal cannot execute them. If
 Tools:
 {toolsJson}
 """;
+    }
+
+    private static JsonElement? FindMatchingToolCall(ChatCompletionRequest request, string? toolCallId)
+    {
+        if (string.IsNullOrWhiteSpace(toolCallId))
+        {
+            return null;
+        }
+
+        foreach (var message in request.Messages.Reverse())
+        {
+            if (!string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase) ||
+                message.ToolCalls is not { ValueKind: JsonValueKind.Array } toolCalls)
+            {
+                continue;
+            }
+
+            foreach (var toolCall in toolCalls.EnumerateArray())
+            {
+                if (toolCall.ValueKind == JsonValueKind.Object &&
+                    toolCall.TryGetProperty("id", out var idElement) &&
+                    string.Equals(idElement.GetString(), toolCallId, StringComparison.Ordinal))
+                {
+                    return toolCall.Clone();
+                }
+            }
+        }
+
+        return null;
     }
 
     public static ParsedAgyChatOutput ParseAgyChatOutput(string text)
@@ -470,7 +509,8 @@ public sealed record ChatMessage(
     [property: JsonPropertyName("role")] string Role,
     [property: JsonPropertyName("content")] JsonElement Content,
     [property: JsonPropertyName("tool_call_id")] string? ToolCallId = null,
-    [property: JsonPropertyName("name")] string? Name = null)
+    [property: JsonPropertyName("name")] string? Name = null,
+    [property: JsonPropertyName("tool_calls")] JsonElement? ToolCalls = null)
 {
     public string GetContentAsString()
     {
