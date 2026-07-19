@@ -1344,6 +1344,52 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    [Fact]
+    public async Task ResponsesApi_AcceptsPreviousResponseId()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("accepted previous id");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-resp-previd-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-resp-previd-admin",
+            Password = password
+        });
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Resp Prev Id Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = "hello",
+                previous_response_id = "resp_123456",
+                stream = false
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     private async Task SeedUserAsync(
         WebApplicationFactory<Program> factory,
         string username,
