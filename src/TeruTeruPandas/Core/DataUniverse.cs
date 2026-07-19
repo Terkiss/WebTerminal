@@ -4,9 +4,8 @@ using System.Text;
 namespace TeruTeruPandas.Core;
 
 /// <summary>
-/// 데이터프레임 유니버스 - 여러 DataFrame을 DBMS처럼 관리하는 컨테이너입니다.
-/// 각 DataFrame을 독립된 테이블로 취급하여 저장, 검색, 관계 연산(Join) 및 통합 관리 기능을 제공합니다.
-/// 메모리 내 데이터 웨어하우스 역할을 수행합니다.
+/// 데이터프레임 유니버스 - 여러 DataFrame을 DBMS처럼 관리하는 컨테이너
+/// 각 DataFrame을 테이블로 취급하여 저장, 검색, 관리하는 기능 제공
 /// </summary>
 public class DataUniverse
 {
@@ -14,14 +13,7 @@ public class DataUniverse
     private readonly Dictionary<string, DataFrameMetadata> _metadata;
     private readonly object _metadataLock = new();
 
-    /// <summary>
-    /// 유니버스에 등록된 전체 테이블 개수를 가져옵니다.
-    /// </summary>
     public int TableCount => _tables.Count;
-
-    /// <summary>
-    /// 등록된 모든 테이블의 이름 목록을 가져옵니다.
-    /// </summary>
     public IEnumerable<string> TableNames => _tables.Keys.ToList();
 
     public DataUniverse()
@@ -31,11 +23,8 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 새로운 테이블(DataFrame)을 추가합니다.
+    /// 테이블(DataFrame) 추가
     /// </summary>
-    /// <param name="tableName">식별자로 사용할 테이블 이름</param>
-    /// <param name="dataFrame">추가할 데이터프레임 객체</param>
-    /// <param name="description">테이블에 대한 설명(옵션)</param>
     public void AddTable(string tableName, DataFrame dataFrame, string? description = null)
     {
         if (string.IsNullOrWhiteSpace(tableName))
@@ -49,7 +38,6 @@ public class DataUniverse
             throw new InvalidOperationException($"Table '{tableName}' already exists. Use UpdateTable to modify existing table.");
         }
 
-        // 메타데이터 업데이트 (동기화 블록)
         lock (_metadataLock)
         {
             _metadata[tableName] = new DataFrameMetadata
@@ -66,7 +54,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 기존 테이블의 데이터를 업데이트합니다. (덮어쓰기)
+    /// 테이블 업데이트 (기존 테이블 덮어쓰기)
     /// </summary>
     public void UpdateTable(string tableName, DataFrame dataFrame)
     {
@@ -91,7 +79,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 테이블이 존재하면 업데이트하고, 없으면 새로 추가합니다 (Upsert).
+    /// 테이블이 존재하면 업데이트, 없으면 추가
     /// </summary>
     public void AddOrUpdateTable(string tableName, DataFrame dataFrame, string? description = null)
     {
@@ -106,7 +94,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 이름으로 테이블(DataFrame)을 조회합니다. 없으면 null을 반환합니다.
+    /// 테이블 조회
     /// </summary>
     public DataFrame? GetTable(string tableName)
     {
@@ -115,7 +103,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 이름으로 테이블을 조회합니다. 테이블이 없으면 KeyNotFoundException을 발생시킵니다.
+    /// 테이블 조회 (없으면 예외 발생)
     /// </summary>
     public DataFrame GetTableOrThrow(string tableName)
     {
@@ -127,7 +115,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 특정 이름의 테이블이 존재하는지 확인합니다.
+    /// 테이블 존재 여부 확인
     /// </summary>
     public bool ContainsTable(string tableName)
     {
@@ -135,7 +123,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 테이블을 유니버스에서 제거합니다.
+    /// 테이블 제거
     /// </summary>
     public bool RemoveTable(string tableName)
     {
@@ -151,7 +139,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 등록된 모든 테이블을 제거합니다.
+    /// 모든 테이블 제거
     /// </summary>
     public void ClearAll()
     {
@@ -163,7 +151,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 특정 컬럼 이름을 포함하고 있는 모든 테이블 목록을 검색합니다.
+    /// 특정 컬럼을 포함하는 테이블 검색
     /// </summary>
     public List<string> FindTablesWithColumn(string columnName)
     {
@@ -174,7 +162,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 지정된 여러 컬럼들을 모두 포함하고 있는 테이블 목록을 검색합니다.
+    /// 특정 컬럼들을 모두 포함하는 테이블 검색
     /// </summary>
     public List<string> FindTablesWithColumns(params string[] columnNames)
     {
@@ -186,7 +174,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 행 개수 범위를 기준으로 테이블을 검색합니다.
+    /// 행 개수 조건으로 테이블 검색
     /// </summary>
     public List<string> FindTablesByRowCount(int minRows, int? maxRows = null)
     {
@@ -201,7 +189,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 사용자 정의 조건(Predicate)을 만족하는 테이블 목록을 검색합니다.
+    /// 커스텀 조건으로 테이블 검색
     /// </summary>
     public List<string> FindTables(Func<DataFrame, bool> predicate)
     {
@@ -212,7 +200,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 이름 패턴(와일드카드 *, ? 지원)을 기준으로 테이블을 검색합니다.
+    /// 이름 패턴으로 테이블 검색 (와일드카드 지원)
     /// </summary>
     public List<string> FindTablesByNamePattern(string pattern)
     {
@@ -229,7 +217,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 특정 테이블의 메타데이터(생성일, 수정일, 컬럼 목록 등)를 조회합니다.
+    /// 테이블 메타데이터 조회
     /// </summary>
     public DataFrameMetadata? GetMetadata(string tableName)
     {
@@ -241,7 +229,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 모든 테이블의 메타데이터 목록을 가져옵니다.
+    /// 모든 테이블의 메타데이터 조회
     /// </summary>
     public List<DataFrameMetadata> GetAllMetadata()
     {
@@ -252,7 +240,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 유니버스 전체의 통계 정보(전체 행수, 셀 수, 최대 테이블 등)를 계산하여 반환합니다.
+    /// 테이블 통계 정보
     /// </summary>
     public UniverseStatistics GetStatistics()
     {
@@ -276,12 +264,8 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 두 테이블 간의 관계형 조인(Join) 연산을 수행합니다.
+    /// 두 테이블 조인
     /// </summary>
-    /// <param name="leftTableName">왼쪽 테이블 이름</param>
-    /// <param name="rightTableName">오른쪽 테이블 이름</param>
-    /// <param name="on">기준이 될 조인 키 컬럼 이름</param>
-    /// <param name="how">조인 방식 ("inner", "left", "right", "outer")</param>
     public DataFrame Join(string leftTableName, string rightTableName, string on, string how = "inner")
     {
         var left = GetTableOrThrow(leftTableName);
@@ -291,10 +275,8 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 여러 테이블을 하나로 합치는 Concat 연산을 수행합니다.
+    /// 여러 테이블 연결 (Concat)
     /// </summary>
-    /// <param name="tableNames">합칠 테이블들의 이름 목록</param>
-    /// <param name="axis">0: 수직 연결(행 추가), 1: 수평 연결(열 추가)</param>
     public DataFrame ConcatTables(IEnumerable<string> tableNames, int axis = 0)
     {
         var dataFrames = tableNames.Select(name => GetTableOrThrow(name)).ToList();
@@ -306,7 +288,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 기존 테이블의 데이터를 복사하여 새로운 이름의 테이블로 등록합니다.
+    /// 테이블 복사
     /// </summary>
     public void CopyTable(string sourceTableName, string destTableName, bool overwrite = false)
     {
@@ -315,8 +297,8 @@ public class DataUniverse
         if (!overwrite && ContainsTable(destTableName))
             throw new InvalidOperationException($"Table '{destTableName}' already exists");
 
-        // DataFrame 복사 (현재는 얕은 복사 수행)
-        var newDataFrame = source;
+        // DataFrame 복사 (얕은 복사)
+        var newDataFrame = source; // TODO: 깊은 복사 구현 필요 시 Copy 메서드 추가
 
         if (overwrite)
         {
@@ -329,7 +311,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 테이블의 이름을 변경합니다.
+    /// 테이블 이름 변경
     /// </summary>
     public void RenameTable(string oldName, string newName)
     {
@@ -345,7 +327,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 유니버스의 상태를 요약 문자열로 반환합니다.
+    /// 유니버스 정보 출력
     /// </summary>
     public override string ToString()
     {
@@ -381,11 +363,11 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// SQL 쿼리를 실행하여 결과 데이터프레임을 반환합니다.
-    /// SELECT, WHERE, JOIN, GROUP BY, ORDER BY, LIMIT 문법을 지원합니다.
+    /// SQL 쿼리 실행
+    /// SELECT, WHERE, JOIN, GROUP BY, ORDER BY, LIMIT 지원
     /// </summary>
-    /// <param name="sql">실행할 SQL 쿼리 문자열</param>
-    /// <returns>쿼리 결과로 생성된 DataFrame</returns>
+    /// <param name="sql">실행할 SQL 쿼리</param>
+    /// <returns>쿼리 결과 DataFrame</returns>
     public DataFrame SqlExecute(string sql)
     {
         var parser = new SimpleSqlParser(sql);
@@ -395,8 +377,11 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// SQL 쿼리의 구문 유효성을 검사합니다.
+    /// SQL 쿼리 유효성 검사
     /// </summary>
+    /// <param name="sql">검사할 SQL 쿼리</param>
+    /// <param name="error">오류 메시지 (오류 발생 시)</param>
+    /// <returns>쿼리가 유효하면 true, 아니면 false</returns>
     public bool ValidateSql(string sql, out string? error)
     {
         try
@@ -414,7 +399,7 @@ public class DataUniverse
     }
 
     /// <summary>
-    /// 인덱서(Indexer)를 사용하여 테이블에 편리하게 접근합니다.
+    /// 인덱서를 통한 테이블 접근
     /// </summary>
     public DataFrame? this[string tableName]
     {
@@ -429,7 +414,7 @@ public class DataUniverse
 }
 
 /// <summary>
-/// DataFrame의 메타데이터 정보를 저장하는 클래스입니다.
+/// DataFrame 메타데이터
 /// </summary>
 public class DataFrameMetadata
 {
@@ -444,7 +429,7 @@ public class DataFrameMetadata
 }
 
 /// <summary>
-/// 유니버스 전체의 통계 지표를 나타내는 클래스입니다.
+/// 유니버스 통계 정보
 /// </summary>
 public class UniverseStatistics
 {

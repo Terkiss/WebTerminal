@@ -7,16 +7,15 @@ using TeruTeruPandas.Core;
 namespace TeruTeruPandas.Core.Agg;
 
 /// <summary>
-/// GroupBy 집계 및 연산을 위한 코어 클래스입니다.
+/// GroupBy 집계 및 연산을 위한 코어 클래스.
 /// df.GroupBy(keys).Agg({...}) 형식의 문법을 지원하며, 
 /// 수백만 건의 데이터를 특정 키(Key) 기준으로 버킷팅 후 
-/// Sum, Mean, Count, Max, Min, Std, Var 등 고속 집계를 수행합니다.
+/// Sum, Mean, Count, Max, Min, Std, Var 등 고속 병렬 집계를 수행합니다.
 /// </summary>
 public class GroupBy
 {
     private readonly string[] _groupKeys;
     private readonly Dictionary<string, IColumn> _columns;
-    // 그룹 키별로 해당하는 행 인덱스(Row Index)들의 리스트를 관리하는 해시맵
     private readonly Dictionary<object, List<int>> _groups;
 
     public GroupBy(Dictionary<string, IColumn> columns, string[] groupKeys)
@@ -26,9 +25,6 @@ public class GroupBy
         _groups = CreateGroups();
     }
 
-    /// <summary>
-    /// 데이터를 스캔하여 그룹 키별로 행 인덱스들을 분류합니다. (버킷팅 과정)
-    /// </summary>
     private Dictionary<object, List<int>> CreateGroups()
     {
         var groups = new Dictionary<object, List<int>>();
@@ -39,7 +35,6 @@ public class GroupBy
         var firstColumn = _columns[_groupKeys[0]];
         var rowCount = firstColumn.Length;
 
-        // 전체 행을 순회하며 그룹 키를 생성하고 해당 버킷에 인덱스 추가 (O(N))
         for (int i = 0; i < rowCount; i++)
         {
             var groupKey = CreateGroupKey(i);
@@ -55,9 +50,6 @@ public class GroupBy
         return groups;
     }
 
-    /// <summary>
-    /// 특정 행의 그룹 키를 생성합니다. 멀티 키의 경우 문자열로 조합합니다.
-    /// </summary>
     private object CreateGroupKey(int rowIndex)
     {
         if (_groupKeys.Length == 1)
@@ -67,7 +59,6 @@ public class GroupBy
         }
         else
         {
-            // 여러 컬럼을 조합하여 유니크한 키 생성 (복합 키 대응)
             var keyParts = new object[_groupKeys.Length];
             for (int i = 0; i < _groupKeys.Length; i++)
             {
@@ -78,21 +69,17 @@ public class GroupBy
         }
     }
 
-    /// <summary>
-    /// 지정된 집계 규칙에 따라 데이터를 요약한 새로운 DataFrame을 생성합니다.
-    /// </summary>
-    /// <param name="aggregations">컬럼명과 집계 함수 목록의 맵핑 (예: {"Salary", new[] {"sum", "mean"}})</param>
     public TeruTeruPandas.Core.DataFrame Agg(Dictionary<string, string[]> aggregations)
     {
         var result = new Dictionary<string, IColumn>();
 
-        // 1. 결과 테이블에 그룹 키 컬럼들 추가
+        // 그룹 키 컬럼들 추가
         foreach (var groupKey in _groupKeys)
         {
             result[groupKey] = CreateGroupKeyColumn(groupKey);
         }
 
-        // 2. 각 그룹별로 집계 함수를 적용하여 새로운 컬럼 생성
+        // 집계 함수 적용
         foreach (var agg in aggregations)
         {
             var columnName = agg.Key;
@@ -113,22 +100,17 @@ public class GroupBy
         return new TeruTeruPandas.Core.DataFrame(result);
     }
 
-    /// <summary>
-    /// 결과 데이터프레임의 그룹 키 컬럼을 생성합니다.
-    /// </summary>
     private IColumn CreateGroupKeyColumn(string groupKeyName)
     {
         var sourceColumn = _columns[groupKeyName];
         var groupValues = new List<object?>();
 
-        // 각 그룹의 첫 번째 행에서 키 값을 추출
         foreach (var group in _groups)
         {
             var firstRowIndex = group.Value[0];
             groupValues.Add(sourceColumn.GetValue(firstRowIndex));
         }
 
-        // 타입별 적절한 컬럼 객체 생성
         if (sourceColumn is PrimitiveColumn<int>)
         {
             var data = groupValues.Cast<int?>().Select(x => x ?? 0).ToArray();
@@ -146,9 +128,6 @@ public class GroupBy
         }
     }
 
-    /// <summary>
-    /// 컬럼 타입에 맞는 집계 로직을 호출합니다.
-    /// </summary>
     private IColumn ApplyAggregation(IColumn sourceColumn, string function)
     {
         if (sourceColumn is PrimitiveColumn<int> intColumn)
@@ -169,9 +148,6 @@ public class GroupBy
         }
     }
 
-    /// <summary>
-    /// 정수형 컬럼에 대한 집계 처리를 수행합니다.
-    /// </summary>
     private IColumn ApplyIntAggregation(PrimitiveColumn<int> column, string function)
     {
         var results = new List<int>();
@@ -179,7 +155,6 @@ public class GroupBy
         foreach (var group in _groups)
         {
             var groupIndices = group.Value;
-            // 결측치를 제외한 실제 값들만 추출
             var values = groupIndices
                 .Where(i => !column.IsNA(i))
                 .Select(i => (int)column.GetValue(i)!)
@@ -207,9 +182,6 @@ public class GroupBy
         return new PrimitiveColumn<int>(results.ToArray());
     }
 
-    /// <summary>
-    /// 실수형 컬럼에 대한 집계 처리를 수행합니다.
-    /// </summary>
     private IColumn ApplyDoubleAggregation(PrimitiveColumn<double> column, string function)
     {
         var results = new List<double>();
@@ -246,9 +218,6 @@ public class GroupBy
         return new PrimitiveColumn<double>(results.ToArray());
     }
 
-    /// <summary>
-    /// 문자열 컬럼에 대한 집계 처리를 수행합니다.
-    /// </summary>
     private IColumn ApplyStringAggregation(StringColumn column, string function)
     {
         var results = new List<object?>();

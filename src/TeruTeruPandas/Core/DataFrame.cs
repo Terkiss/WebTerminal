@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using TeruTeruPandas.Core.Column;
 using TeruTeruPandas.Core.Index;
 using TeruTeruPandas.Core.Agg;
@@ -12,7 +12,6 @@ namespace TeruTeruPandas.Core;
 /// 열 단위(Columnar) 저장 방식을 택해 캐시 지역성(Cache Locality)을 극대화하며,
 /// 내부적으로 `ArrayPool` 기반의 `PrimitiveColumn`을 사용하여 대형 데이터셋 처리 시
 /// 가비지 컬렉터(GC) 부하 및 메모리 스트레스를 최소화(Zero-Allocation 지향)합니다.
-/// 데이터프레임은 행(Row)보다는 열(Column) 중심 연산에 최적화되어 있습니다.
 /// </summary>
 public class DataFrame : IDisposable
 {
@@ -21,40 +20,15 @@ public class DataFrame : IDisposable
     private readonly List<string> _columnNames;
     private bool _disposed;
 
-    /// <summary>
-    /// 데이터프레임의 행 인덱스 정보를 가져옵니다.
-    /// </summary>
     public Index.Index Index => _index;
-
-    /// <summary>
-    /// 모든 컬럼 이름들의 배열을 가져옵니다.
-    /// </summary>
     public string[] Columns => _columnNames.ToArray();
-
-    /// <summary>
-    /// 전체 행(Row)의 개수를 반환합니다.
-    /// </summary>
     public int RowCount => _index.Length;
-
-    /// <summary>
-    /// 전체 열(Column)의 개수를 반환합니다.
-    /// </summary>
     public int ColumnCount => _columnNames.Count;
 
-    /// <summary>
-    /// 전체 요소의 개수 (행 * 열)
-    /// </summary>
+    // 3단계: 추후 기본 속성 추가
     public int Size => RowCount * ColumnCount;
-
-    /// <summary>
-    /// 데이터프레임이 비어있는지 여부를 반환합니다.
-    /// </summary>
     public bool Empty => RowCount == 0;
 
-    /// <summary>
-    /// 전체 데이터를 2차원 object 배열로 반환합니다. 
-    /// (주의: 행 단위로 메모리를 재배치하므로 데이터가 클 경우 성능 저하가 있을 수 있습니다.)
-    /// </summary>
     public object?[,] Values
     {
         get
@@ -71,9 +45,6 @@ public class DataFrame : IDisposable
         }
     }
 
-    /// <summary>
-    /// 각 컬럼의 데이터 타입을 이름별로 맵핑한 사전을 반환합니다.
-    /// </summary>
     public Dictionary<string, Type> Dtypes
     {
         get
@@ -101,7 +72,7 @@ public class DataFrame : IDisposable
         var firstColumn = columns.Values.First();
         var rowCount = firstColumn.Length;
 
-        // 모든 컬럼의 길이가 동일한지 확인 (정합성 검사)
+        // 모든 컬럼의 길이가 동일한지 확인
         foreach (var column in columns.Values)
         {
             if (column.Length != rowCount)
@@ -116,9 +87,7 @@ public class DataFrame : IDisposable
             throw new ArgumentException("Index length must match column length");
     }
 
-    /// <summary>
-    /// 이름으로 특정 컬럼에 접근합니다.
-    /// </summary>
+    // 인덱서 지원
     public IColumn this[string columnName]
     {
         get
@@ -135,18 +104,12 @@ public class DataFrame : IDisposable
         }
     }
 
-    /// <summary>
-    /// 행 위치(index)와 컬럼 이름으로 개별 셀 값에 접근합니다.
-    /// </summary>
     public object? this[int row, string column]
     {
         get => this[column].GetValue(row);
         set => this[column].SetValue(row, value);
     }
 
-    /// <summary>
-    /// 행 라벨(key)과 컬럼 이름으로 개별 셀 값에 접근합니다.
-    /// </summary>
     public object? this[object rowKey, string column]
     {
         get
@@ -165,9 +128,7 @@ public class DataFrame : IDisposable
         }
     }
 
-    /// <summary>
-    /// 불린 시리즈(Mask)를 사용하여 조건에 맞는 행들만 필터링한 새로운 DataFrame을 생성합니다.
-    /// </summary>
+    // 불린 인덱서 지원
     public DataFrame this[BoolSeries mask]
     {
         get
@@ -175,21 +136,16 @@ public class DataFrame : IDisposable
             if (mask.Length != RowCount)
                 throw new ArgumentException("Boolean mask length must match DataFrame row count");
 
-            // True인 인덱스 위치들을 추출
             var indices = mask.GetTrueIndices();
-            return Reorder(indices);
+            return TakeRows(indices);
         }
     }
 
-    /// <summary>
-    /// 주어진 인덱스 순서대로 행을 재배치하여 새로운 DataFrame을 생성합니다. (필터링 및 정렬에 사용)
-    /// </summary>
-    public DataFrame Reorder(int[] indices)
+    private DataFrame TakeRows(int[] indices)
     {
         var newColumns = new Dictionary<string, IColumn>();
         foreach (var columnName in _columnNames)
         {
-            // 각 컬럼별로 고속 재배치 수행
             newColumns[columnName] = _columns[columnName].Reorder(indices);
         }
 
@@ -197,21 +153,13 @@ public class DataFrame : IDisposable
         return new DataFrame(newColumns, newIndex);
     }
 
-    /// <summary>
-    /// 모든 데이터를 비운 빈 데이터프레임을 반환합니다.
-    /// </summary>
-    public DataFrame Clear()
-    {
-        return Reorder(new int[0]);
-    }
-
-    /// <summary>
-    /// 라벨 기반 인덱서(Pandas 스타일)
-    /// </summary>
+    // Loc 인덱서(pandas 스타일)
     public DataFrameLocIndexer Loc => new(this);
 
+    // 4단계: at, iat 인덱서 구현 (todo.yaml에서 정의)
     /// <summary>
-    /// 라벨 기반 단일 값 접근. .loc보다 빠릅니다.
+    /// 가장 빠른 접근 - 라벨 기반
+    /// todo.yaml 4단계에서 정의한 at 인덱서
     /// </summary>
     public object? At(object rowKey, string columnName)
     {
@@ -226,7 +174,8 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 정수 위치 기반 단일 값 접근. .iloc보다 빠릅니다.
+    /// 가장 빠른 접근 - 정수 위치 기반
+    /// todo.yaml 4단계에서 정의한 iat 인덱서 
     /// </summary>
     public object? Iat(int row, int column)
     {
@@ -240,7 +189,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 라벨 기반 단일 값 설정
+    /// 값 설정 - 라벨 기반
     /// </summary>
     public void SetAt(object rowKey, string columnName, object value)
     {
@@ -255,7 +204,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 정수 위치 기반 단일 값 설정
+    /// 값 설정 - 정수 위치 기반
     /// </summary>
     public void SetIat(int row, int column, object value)
     {
@@ -268,14 +217,10 @@ public class DataFrame : IDisposable
         _columns[_columnNames[column]].SetValue(row, value);
     }
 
-    /// <summary>
-    /// 위치 기반 인덱서 (Pandas 스타일)
-    /// </summary>
+    // ILoc 인덱서(pandas 스타일)
     public DataFrameILocIndexer ILoc => new(this);
 
-    /// <summary>
-    /// 새로운 컬럼을 추가합니다. 기존 컬럼과 행 길이가 같아야 합니다.
-    /// </summary>
+    // 열 추가/제거
     public void AddColumn(string name, IColumn column)
     {
         if (column.Length != RowCount)
@@ -291,9 +236,6 @@ public class DataFrame : IDisposable
         _columnNames.Add(name);
     }
 
-    /// <summary>
-    /// 특정 컬럼을 제거합니다.
-    /// </summary>
     public void DropColumn(string name)
     {
         if (!_columns.ContainsKey(name))
@@ -303,9 +245,7 @@ public class DataFrame : IDisposable
         _columnNames.Remove(name);
     }
 
-    /// <summary>
-    /// 상위 n개 행을 반환합니다.
-    /// </summary>
+    // 기본 메서드들
     public DataFrame Head(int n = 5)
     {
         int count = Math.Min(n, RowCount);
@@ -320,9 +260,6 @@ public class DataFrame : IDisposable
         return new DataFrame(slicedColumns, slicedIndex);
     }
 
-    /// <summary>
-    /// 하위 n개 행을 반환합니다.
-    /// </summary>
     public DataFrame Tail(int n = 5)
     {
         int count = Math.Min(n, RowCount);
@@ -339,10 +276,11 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 결측치(NA)가 포함된 행을 제거합니다.
+    /// 결측치 제거 (옵션 강화)
     /// </summary>
-    /// <param name="how">"any": 하나라도 NA면 제거, "all": 모든 컬럼이 NA면 제거</param>
-    /// <param name="thresh">정상 데이터 개수가 이 값보다 작으면 제거 (how보다 우선순위가 높음)</param>
+    /// <param name="how">"any": 하나라도 NA면 등, "all": 모든 컬럼이 NA면 드랍</param>
+    /// <param name="thresh">최소한 이 개수 이상의 정상 데이터가 있어야 생존 (how보다 우선순위 높음)</param>
+    /// <returns></returns>
     public DataFrame DropNA(string how = "any", int? thresh = null)
     {
         var validRows = new List<int>();
@@ -363,7 +301,7 @@ public class DataFrame : IDisposable
             {
                 keep = nonNaCount >= thresh.Value;
             }
-            else
+            else // thresh가 없으면 how 확인
             {
                 if (how == "any")
                 {
@@ -371,7 +309,7 @@ public class DataFrame : IDisposable
                 }
                 else if (how == "all")
                 {
-                    keep = nonNaCount > 0;
+                    keep = nonNaCount > 0; // 모두 NA인 경우(nonNaCount == 0)만 드랍 -> 하나라도 있으면 keep
                 }
                 else
                 {
@@ -387,19 +325,19 @@ public class DataFrame : IDisposable
             return this;
 
         var indices = validRows.ToArray();
+
         var newColumns = new Dictionary<string, IColumn>();
         foreach (var columnName in _columnNames)
         {
             newColumns[columnName] = _columns[columnName].Reorder(indices);
         }
 
+        // 인덱스 유지 (중요)
         var newIndex = _index.Reorder(indices);
+
         return new DataFrame(newColumns, newIndex);
     }
 
-    /// <summary>
-    /// 결측치를 특정 값으로 채웁니다.
-    /// </summary>
     public DataFrame FillNA(object? value)
     {
         var newColumns = new Dictionary<string, IColumn>();
@@ -410,9 +348,6 @@ public class DataFrame : IDisposable
         return new DataFrame(newColumns, _index);
     }
 
-    /// <summary>
-    /// 결측치를 특정 방식(ffill, bfill 등)으로 채웁니다.
-    /// </summary>
     public DataFrame FillNA(string method)
     {
         var newColumns = new Dictionary<string, IColumn>();
@@ -423,9 +358,6 @@ public class DataFrame : IDisposable
         return new DataFrame(newColumns, _index);
     }
 
-    /// <summary>
-    /// 특정 컬럼의 값을 기준으로 행을 정렬합니다.
-    /// </summary>
     public DataFrame SortValues(string by, bool ascending = true)
     {
         if (!_columns.ContainsKey(by))
@@ -444,9 +376,6 @@ public class DataFrame : IDisposable
         return new DataFrame(newColumns, newIndex);
     }
 
-    /// <summary>
-    /// 인덱스 값을 기준으로 행을 정렬합니다.
-    /// </summary>
     public DataFrame SortIndex(bool ascending = true)
     {
         var indices = _index.Argsort(ascending);
@@ -462,9 +391,6 @@ public class DataFrame : IDisposable
         return new DataFrame(newColumns, newIndex);
     }
 
-    /// <summary>
-    /// 데이터프레임의 내용을 문자열 표 형태로 출력합니다. (디버깅용)
-    /// </summary>
     public override string ToString()
     {
         var sb = new System.Text.StringBuilder();
@@ -502,9 +428,7 @@ public class DataFrame : IDisposable
         return sb.ToString();
     }
 
-    /// <summary>
-    /// 데이터프레임의 요약 정보(인덱스 타입, 컬럼 정보, 비결측치 수, 타입, 메모리 사용량)를 출력합니다.
-    /// </summary>
+    // 3단계: DataFrame.info() 메서드 구현
     public void Info(StringBuilder? buffer = null)
     {
         var output = buffer ?? new StringBuilder();
@@ -553,9 +477,6 @@ public class DataFrame : IDisposable
         return string.Join(", ", typeCounts.Select(kv => $"{kv.Key}({kv.Value})"));
     }
 
-    /// <summary>
-    /// 데이터프레임의 예상 메모리 점유량을 계산합니다.
-    /// </summary>
     private long EstimateMemoryUsage()
     {
         long totalBytes = 0;
@@ -576,9 +497,7 @@ public class DataFrame : IDisposable
         return 8; // 기본값
     }
 
-    /// <summary>
-    /// 수치형 컬럼들에 대한 요약 통계량(count, mean, std, min, 25%, 50%, 75%, max)을 계산하여 새로운 DataFrame으로 반환합니다.
-    /// </summary>
+    // 3단계: DataFrame.describe() 메서드 구현
     public DataFrame Describe()
     {
         var numericColumns = _columnNames
@@ -615,17 +534,12 @@ public class DataFrame : IDisposable
         return new DataFrame(resultColumns, resultIndex);
     }
 
-    /// <summary>
-    /// 각 컬럼의 표준편차를 계산합니다.
-    /// </summary>
+    // 3단계: 통계 함수 구현
     public Series<double> Std()
     {
         return ApplyStatisticFunction("std", values => CalculateStandardDeviation(values));
     }
 
-    /// <summary>
-    /// 각 컬럼의 분산을 계산합니다.
-    /// </summary>
     public Series<double> Var()
     {
         return ApplyStatisticFunction("var", values =>
@@ -636,33 +550,21 @@ public class DataFrame : IDisposable
         });
     }
 
-    /// <summary>
-    /// 각 컬럼의 중앙값을 계산합니다.
-    /// </summary>
     public Series<double> Median()
     {
         return ApplyStatisticFunction("median", values => CalculateQuantile(values, 0.5));
     }
 
-    /// <summary>
-    /// 각 컬럼의 최솟값을 계산합니다.
-    /// </summary>
     public Series<double> Min()
     {
         return ApplyStatisticFunction("min", values => values.Min());
     }
 
-    /// <summary>
-    /// 각 컬럼의 최댓값을 계산합니다.
-    /// </summary>
     public Series<double> Max()
     {
         return ApplyStatisticFunction("max", values => values.Max());
     }
 
-    /// <summary>
-    /// 각 컬럼의 백분위수(Quantile)를 계산합니다. (q: 0.0 ~ 1.0)
-    /// </summary>
     public Series<double> Quantile(double q)
     {
         return ApplyStatisticFunction($"quantile({q})", values => CalculateQuantile(values, q));
@@ -689,9 +591,7 @@ public class DataFrame : IDisposable
         return new Series<double>(resultData, new StringIndex(resultIndex), statName);
     }
 
-    /// <summary>
-    /// 결측치 여부를 불린 값으로 반환하는 동일한 크기의 DataFrame을 생성합니다.
-    /// </summary>
+    // 3단계: 결측치 처리 함수
     public DataFrame IsNa()
     {
         var resultColumns = new Dictionary<string, IColumn>();
@@ -713,9 +613,6 @@ public class DataFrame : IDisposable
         return new DataFrame(resultColumns, _index);
     }
 
-    /// <summary>
-    /// 결측치가 아닌 요소들을 불린 값으로 반환하는 동일한 크기의 DataFrame을 생성합니다.
-    /// </summary>
     public DataFrame NotNa()
     {
         var resultColumns = new Dictionary<string, IColumn>();
@@ -737,9 +634,6 @@ public class DataFrame : IDisposable
         return new DataFrame(resultColumns, _index);
     }
 
-    /// <summary>
-    /// 특정 값을 다른 값으로 치환합니다.
-    /// </summary>
     public DataFrame Replace(object toReplace, object value)
     {
         var resultColumns = new Dictionary<string, IColumn>();
@@ -761,6 +655,7 @@ public class DataFrame : IDisposable
         return new DataFrame(resultColumns, _index);
     }
 
+    // 헬퍼 메서드: 타입에 따라 적절한 컬럼 생성
     private static IColumn CreateColumn(object?[] data, Type dataType)
     {
         if (dataType == typeof(int))
@@ -800,13 +695,20 @@ public class DataFrame : IDisposable
         }
         else
         {
+            // 기본적으로 object 배열은 StringColumn 생성
             var stringData = data.Select(x => x?.ToString() ?? string.Empty).ToArray();
             return new StringColumn(stringData);
         }
     }
 
+    // 4단계: 이항 연산 구현 (todo.yaml에서 정의)
+
     /// <summary>
-    /// 나머지(Modulus) 연산을 수행합니다.
+    /// DataFrame 또는 스칼라와의 덧셈 연산
+    /// todo.yaml 4단계에서 정의한 add 연산
+    /// </summary>
+    /// <summary>
+    /// 모듈러 연산 (나머지)
     /// </summary>
     public DataFrame Mod(object other, int axis = 1, object? fillValue = null)
     {
@@ -820,45 +722,30 @@ public class DataFrame : IDisposable
         }
     }
 
-    /// <summary>
-    /// 덧셈(Addition) 연산을 수행합니다.
-    /// </summary>
     public DataFrame Add(object other, int axis = 1, object? fillValue = null)
     {
         if (other is DataFrame otherDf) return PerformBinaryOp(otherDf, "Add", fillValue);
         return PerformBinaryOpScalar(other, "Add", fillValue);
     }
 
-    /// <summary>
-    /// 뺄셈(Subtraction) 연산을 수행합니다.
-    /// </summary>
     public DataFrame Sub(object other, int axis = 1, object? fillValue = null)
     {
         if (other is DataFrame otherDf) return PerformBinaryOp(otherDf, "Sub", fillValue);
         return PerformBinaryOpScalar(other, "Sub", fillValue);
     }
 
-    /// <summary>
-    /// 곱셈(Multiplication) 연산을 수행합니다.
-    /// </summary>
     public DataFrame Mul(object other, int axis = 1, object? fillValue = null)
     {
         if (other is DataFrame otherDf) return PerformBinaryOp(otherDf, "Mul", fillValue);
         return PerformBinaryOpScalar(other, "Mul", fillValue);
     }
 
-    /// <summary>
-    /// 나눗셈(Division) 연산을 수행합니다.
-    /// </summary>
     public DataFrame Div(object other, int axis = 1, object? fillValue = null)
     {
         if (other is DataFrame otherDf) return PerformBinaryOp(otherDf, "Div", fillValue);
         return PerformBinaryOpScalar(other, "Div", fillValue);
     }
 
-    /// <summary>
-    /// 거듭제곱(Power) 연산을 수행합니다.
-    /// </summary>
     public DataFrame Pow(object other, int axis = 1, object? fillValue = null)
     {
         if (other is DataFrame otherDf) return PerformBinaryOp(otherDf, "Pow", fillValue);
@@ -866,7 +753,8 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 동등 비교(Equal) 연산을 수행합니다.
+    /// 동등 비교 연산
+    /// todo.yaml 4단계에서 정의한 eq 연산
     /// </summary>
     public DataFrame Eq(object other, int axis = 1)
     {
@@ -881,7 +769,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 비동등 비교(Not Equal) 연산을 수행합니다.
+    /// 부등 비교 연산
     /// </summary>
     public DataFrame Ne(object other, int axis = 1)
     {
@@ -896,7 +784,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 작음 비교(Less Than) 연산을 수행합니다.
+    /// 작음 비교 연산
     /// </summary>
     public DataFrame Lt(object other, int axis = 1)
     {
@@ -911,7 +799,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 작거나 같음 비교(Less or Equal) 연산을 수행합니다.
+    /// 작거나 같음 비교 연산
     /// </summary>
     public DataFrame Le(object other, int axis = 1)
     {
@@ -926,7 +814,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 큼 비교(Greater Than) 연산을 수행합니다.
+    /// 큼 비교 연산
     /// </summary>
     public DataFrame Gt(object other, int axis = 1)
     {
@@ -941,7 +829,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 크거나 같음 비교(Greater or Equal) 연산을 수행합니다.
+    /// 크거나 같음 비교 연산
     /// </summary>
     public DataFrame Ge(object other, int axis = 1)
     {
@@ -955,97 +843,54 @@ public class DataFrame : IDisposable
         }
     }
 
-    // --- 이항 연산 최적화 헬퍼 ---
+    // 이항 연산 헬퍼 메서드들
 
-    private DataFrame PerformBinaryOp(DataFrame other, string opName, object? fillValue)
+    private DataFrame BinaryOperation(DataFrame other, Func<object, object, object> operation, object fillValue)
     {
-        // 현재 버전에서는 인덱스 정렬(Alignment) 없이 행 길이가 같아야 합니다.
-        if (this.RowCount != other.RowCount)
-        {
-            throw new NotSupportedException("DataFrame lengths must match for arithmetic operations in this version.");
-        }
-
         var resultColumns = new Dictionary<string, IColumn>();
         var allColumns = _columnNames.Union(other._columnNames).ToList();
 
         foreach (var columnName in allColumns)
         {
-            IColumn? left = _columns.ContainsKey(columnName) ? _columns[columnName] : null;
-            IColumn? right = other._columns.ContainsKey(columnName) ? other._columns[columnName] : null;
+            var leftColumn = _columns.ContainsKey(columnName) ? _columns[columnName] : null;
+            var rightColumn = other._columns.ContainsKey(columnName) ? other._columns[columnName] : null;
 
-            if (left == null && right == null) continue;
+            var maxLength = Math.Max(leftColumn?.Length ?? 0, rightColumn?.Length ?? 0);
+            var resultValues = new object[maxLength];
 
-            // 한쪽 컬럼이 없는 경우 fillValue를 상수로 채워서 연산 수행
-            if (left == null)
+            for (int i = 0; i < maxLength; i++)
             {
-                if (fillValue != null)
-                {
-                    left = CreateConstantColumn(right!.Length, fillValue, right.DataType);
-                }
-                else
-                {
-                    resultColumns[columnName] = CreateConstantColumn(this.RowCount, null, typeof(object));
-                    continue;
-                }
+                var leftValue = leftColumn?.GetValue(i) ?? fillValue;
+                var rightValue = rightColumn?.GetValue(i) ?? fillValue;
+
+                resultValues[i] = operation(leftValue, rightValue);
             }
 
-            if (right == null)
-            {
-                if (fillValue != null)
-                {
-                    right = CreateConstantColumn(left!.Length, fillValue, left.DataType);
-                }
-                else
-                {
-                    resultColumns[columnName] = CreateConstantColumn(this.RowCount, null, typeof(object));
-                    continue;
-                }
-            }
-
-            // 결측치가 있을 경우 fillValue로 대체하여 계산 (Broadcasting 유사 처리)
-            if (fillValue != null)
-            {
-                left = left!.FillNA(fillValue);
-                right = right!.FillNA(fillValue);
-            }
-
-            // IColumn 수준에서 SIMD 가속 연산 호출
-            resultColumns[columnName] = opName switch
-            {
-                "Add" => left!.Add(right!),
-                "Sub" => left!.Sub(right!),
-                "Mul" => left!.Mul(right!),
-                "Div" => left!.Div(right!),
-                "Mod" => left!.Mod(right!),
-                "Pow" => left!.Pow(right!),
-                _ => throw new NotSupportedException(opName)
-            };
+            resultColumns[columnName] = CreateColumn(resultValues, typeof(object));
         }
 
-        return new DataFrame(resultColumns, _index);
+        var resultIndex = new RangeIndex(resultColumns.Values.First().Length);
+        return new DataFrame(resultColumns, resultIndex);
     }
 
-    private DataFrame PerformBinaryOpScalar(object scalar, string opName, object? fillValue)
+    private DataFrame BinaryOperationWithScalar(object scalar, Func<object, object, object> operation)
     {
         var resultColumns = new Dictionary<string, IColumn>();
 
         foreach (var columnName in _columnNames)
         {
-            var col = _columns[columnName];
-            if (fillValue != null) col = col.FillNA(fillValue);
+            var column = _columns[columnName];
+            var resultValues = new object[column.Length];
 
-            // 스칼라 연산은 Broadcasting에 의해 모든 행에 일괄 적용됩니다.
-            resultColumns[columnName] = opName switch
+            for (int i = 0; i < column.Length; i++)
             {
-                "Add" => col.Add(scalar),
-                "Sub" => col.Sub(scalar),
-                "Mul" => col.Mul(scalar),
-                "Div" => col.Div(scalar),
-                "Mod" => col.Mod(scalar),
-                "Pow" => col.Pow(scalar),
-                _ => throw new NotSupportedException(opName)
-            };
+                var value = column.GetValue(i);
+                resultValues[i] = operation(value ?? 0, scalar);
+            }
+
+            resultColumns[columnName] = CreateColumn(resultValues, column.DataType);
         }
+
         return new DataFrame(resultColumns, _index);
     }
 
@@ -1098,11 +943,120 @@ public class DataFrame : IDisposable
         return new DataFrame(resultColumns, _index);
     }
 
+    // IColumn 산술 메서드를 활용한 최적화된 이항 연산
+
+    private DataFrame PerformBinaryOp(DataFrame other, string opName, object? fillValue)
+    {
+        // 3단계를 위한 간단한 인덱스 검증 (최소한 동일한 인덱스 길이를 요구함)
+        if (this.RowCount != other.RowCount)
+        {
+            // Try to align? For now throw as per plan.
+            // But actually Pandas 'Broadcasting' usually means scalar broadcasting OR alignment.
+            // If lengths differ, we cannot simply column-op unless we reindex.
+            throw new NotSupportedException("DataFrame lengths must match for arithmetic operations in this version.");
+        }
+
+        var resultColumns = new Dictionary<string, IColumn>();
+        var allColumns = _columnNames.Union(other._columnNames).ToList();
+
+        foreach (var columnName in allColumns)
+        {
+            IColumn? left = _columns.ContainsKey(columnName) ? _columns[columnName] : null;
+            IColumn? right = other._columns.ContainsKey(columnName) ? other._columns[columnName] : null;
+
+            if (left == null && right == null) continue; // Should not happen
+
+            // 하나가 누락된 경우, 결과는 모두 NA입니다 (fillValue가 지정되지 않은 한...)
+            // 실제로 한쪽이 누락되면 Pandas 결과는 NaN입니다.
+            // fillValue가 제공되면 누락된 쪽은 fillValue로 처리됩니다.
+
+            if (left == null)
+            {
+                if (fillValue != null)
+                {
+                    // Treat left as a column of fillValue
+                    // Need to create a scalar column or similar. 
+                    // Simpler: use right and apply inverse op with scalar? 
+                    // e.g. fillValue(0) - right.
+                    // But I don't have 'Scalar - Column' op in IColumn.
+                    // Workaround: Create a constant column.
+                    left = CreateConstantColumn(right!.Length, fillValue, right.DataType);
+                }
+                else
+                {
+                    resultColumns[columnName] = CreateConstantColumn(this.RowCount, null, typeof(object)); // NA column
+                    continue;
+                }
+            }
+
+            if (right == null)
+            {
+                if (fillValue != null)
+                {
+                    right = CreateConstantColumn(left!.Length, fillValue, left.DataType);
+                }
+                else
+                {
+                    resultColumns[columnName] = CreateConstantColumn(this.RowCount, null, typeof(object)); // NA column
+                    continue;
+                }
+            }
+
+            // Apply fillValue to existing NAs if requested
+            if (fillValue != null)
+            {
+                left = left!.FillNA(fillValue);
+                right = right!.FillNA(fillValue);
+            }
+
+            // Compute
+            resultColumns[columnName] = opName switch
+            {
+                "Add" => left!.Add(right!),
+                "Sub" => left!.Sub(right!),
+                "Mul" => left!.Mul(right!),
+                "Div" => left!.Div(right!),
+                "Mod" => left!.Mod(right!),
+                "Pow" => left!.Pow(right!),
+                _ => throw new NotSupportedException(opName)
+            };
+        }
+
+        return new DataFrame(resultColumns, _index); // Keeps original index
+    }
+
+    private DataFrame PerformBinaryOpScalar(object scalar, string opName, object? fillValue)
+    {
+        var resultColumns = new Dictionary<string, IColumn>();
+
+        foreach (var columnName in _columnNames)
+        {
+            var col = _columns[columnName];
+            if (fillValue != null) col = col.FillNA(fillValue);
+
+            resultColumns[columnName] = opName switch
+            {
+                "Add" => col.Add(scalar),
+                "Sub" => col.Sub(scalar),
+                "Mul" => col.Mul(scalar),
+                "Div" => col.Div(scalar),
+                "Mod" => col.Mod(scalar),
+                "Pow" => col.Pow(scalar),
+                _ => throw new NotSupportedException(opName)
+            };
+        }
+        return new DataFrame(resultColumns, _index);
+    }
+
+    // 상수 컬럼을 생성하기 위한 헬퍼
     private IColumn CreateConstantColumn(int length, object? value, Type hintType)
     {
-        if (value == null) return new PrimitiveColumn<double>(length);
+        // 컬럼 타입을 선택하기 위한 간단한 휴리스틱
+        if (value == null) return new PrimitiveColumn<double>(length); // NA -> double (NaN 가능) 논리적 선택? 또는 Object
+                                                                       // 하지만 수치 연산의 경우 보통 double 또는 float을 사용합니다.
 
         var type = value.GetType();
+        // Invoke generic Create
         if (type == typeof(int)) return new PrimitiveColumn<int>(Enumerable.Repeat((int)value, length).ToArray());
         if (type == typeof(double)) return new PrimitiveColumn<double>(Enumerable.Repeat((double)value, length).ToArray());
         if (type == typeof(float)) return new PrimitiveColumn<float>(Enumerable.Repeat((float)value, length).ToArray());
@@ -1113,7 +1067,67 @@ public class DataFrame : IDisposable
             return new StringColumn(arr);
         }
 
-        throw new NotSupportedException($"Constant column of type {type} not supported yet.");
+        // Fallback
+        var objArr = new object?[length]; Array.Fill(objArr, value);
+        // We lack ObjectColumn? Use StringColumn for now or error?
+        // TeruTeruPandas lacks generic ObjectColumn in gap analysis!
+        throw new NotSupportedException($"Constant column of type {type} not supported yet in helper.");
+    }
+
+    private static object? SubtractValues(object? a, object? b)
+    {
+        if (a == null || b == null) return null;
+
+        try
+        {
+            return (dynamic)a - (dynamic)b;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static object? MultiplyValues(object? a, object? b)
+    {
+        if (a == null || b == null) return null;
+
+        try
+        {
+            return (dynamic)a * (dynamic)b;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static object? DivideValues(object? a, object? b)
+    {
+        if (a == null || b == null) return null;
+
+        try
+        {
+            return (dynamic)a / (dynamic)b;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static object? PowerValues(object? a, object? b)
+    {
+        if (a == null || b == null) return null;
+
+        try
+        {
+            return Math.Pow(Convert.ToDouble(a), Convert.ToDouble(b));
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static int CompareValues(object a, object b)
@@ -1158,63 +1172,43 @@ public class DataFrame : IDisposable
         return new Series<double>(resultData, new StringIndex(resultIndex));
     }
 
-    /// <summary>
-    /// 열별 평균을 구합니다. (axis 1은 현재 지원되지 않음)
-    /// </summary>
     public Series<double> Mean(int axis = 0)
     {
         if (axis != 0) throw new NotImplementedException("Axis 1 not supported");
         return ComputeStat(c => c.Mean());
     }
 
-    /// <summary>
-    /// 열별 합계를 구합니다.
-    /// </summary>
     public Series<double> Sum(int axis = 0)
     {
         if (axis != 0) throw new NotImplementedException("Axis 1 not supported");
         return ComputeStat(c => c.Sum());
     }
 
-    /// <summary>
-    /// 열별 중앙값을 구합니다.
-    /// </summary>
     public Series<double> Median(int axis = 0)
     {
         if (axis != 0) throw new NotImplementedException("Axis 1 not supported");
         return ComputeStat(c => c.Median());
     }
 
-    /// <summary>
-    /// 열별 분산을 구합니다.
-    /// </summary>
     public Series<double> Var(int axis = 0)
     {
         if (axis != 0) throw new NotImplementedException("Axis 1 not supported");
         return ComputeStat(c => c.Var());
     }
 
-    /// <summary>
-    /// 열별 표준편차를 구합니다.
-    /// </summary>
     public Series<double> Std(int axis = 0)
     {
         if (axis != 0) throw new NotImplementedException("Axis 1 not supported");
         return ComputeStat(c => c.Std());
     }
 
-    /// <summary>
-    /// 열별 백분위수를 구합니다.
-    /// </summary>
     public Series<double> Quantile(double q, int axis = 0)
     {
         if (axis != 0) throw new NotImplementedException("Axis 1 not supported");
         return ComputeStat(c => c.Quantile(q));
     }
 
-    /// <summary>
-    /// 열별 최댓값을 구합니다.
-    /// </summary>
+
     public Series<double> Max(int axis = 0)
     {
         if (axis != 0) throw new NotImplementedException("Axis 1 not supported");
@@ -1226,9 +1220,6 @@ public class DataFrame : IDisposable
         });
     }
 
-    /// <summary>
-    /// 열별 최솟값을 구합니다.
-    /// </summary>
     public Series<double> Min(int axis = 0)
     {
         if (axis != 0) throw new NotImplementedException("Axis 1 not supported");
@@ -1240,8 +1231,11 @@ public class DataFrame : IDisposable
         });
     }
 
+    // 4단계: 누적 연산 함수 구현 (todo.yaml에서 정의)
+
     /// <summary>
-    /// 누적합(Cumulative Sum)을 계산합니다.
+    /// 누적합 계산
+    /// todo.yaml 4단계에서 정의한 cumsum 구현
     /// </summary>
     public DataFrame Cumsum(int axis = 0, bool skipna = true)
     {
@@ -1279,11 +1273,12 @@ public class DataFrame : IDisposable
                 }
                 else
                 {
-                    resultColumns[columnName] = column;
+                    resultColumns[columnName] = column; // 비수치형은 그대로 복사
                 }
             }
         }
 
+        // 결과가 없는 경우 원본 반환
         if (resultColumns.Count == 0)
         {
             return new DataFrame(_columns, _index);
@@ -1293,13 +1288,14 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 누적곱(Cumulative Product)을 계산합니다.
+    /// 누적곱 계산
+    /// todo.yaml 4단계에서 정의한 cumprod 구현
     /// </summary>
     public DataFrame Cumprod(int axis = 0, bool skipna = true)
     {
         var resultColumns = new Dictionary<string, IColumn>();
 
-        if (axis == 0)
+        if (axis == 0) // 열별 누적
         {
             foreach (var columnName in _columnNames)
             {
@@ -1336,6 +1332,7 @@ public class DataFrame : IDisposable
             }
         }
 
+        // 결과가 없는 경우 원본 반환
         if (resultColumns.Count == 0)
         {
             return new DataFrame(_columns, _index);
@@ -1345,13 +1342,14 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 누적 최댓값(Cumulative Maximum)을 계산합니다.
+    /// 누적 최댓값 계산
+    /// todo.yaml 4단계에서 정의한 cummax 구현
     /// </summary>
     public DataFrame Cummax(int axis = 0, bool skipna = true)
     {
         var resultColumns = new Dictionary<string, IColumn>();
 
-        if (axis == 0)
+        if (axis == 0) // 열별 누적
         {
             foreach (var columnName in _columnNames)
             {
@@ -1389,6 +1387,7 @@ public class DataFrame : IDisposable
             }
         }
 
+        // 결과가 없는 경우 원본 반환
         if (resultColumns.Count == 0)
         {
             return new DataFrame(_columns, _index);
@@ -1398,13 +1397,14 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 누적 최솟값(Cumulative Minimum)을 계산합니다.
+    /// 누적 최솟값 계산
+    /// todo.yaml 4단계에서 정의한 cummin 구현
     /// </summary>
     public DataFrame Cummin(int axis = 0, bool skipna = true)
     {
         var resultColumns = new Dictionary<string, IColumn>();
 
-        if (axis == 0)
+        if (axis == 0) // 열별 누적
         {
             foreach (var columnName in _columnNames)
             {
@@ -1442,6 +1442,7 @@ public class DataFrame : IDisposable
             }
         }
 
+        // 결과가 없는 경우 원본 반환
         if (resultColumns.Count == 0)
         {
             return new DataFrame(_columns, _index);
@@ -1451,13 +1452,14 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 차분(Difference, 현재 행 - 이전 행)을 계산합니다.
+    /// 차분 계산 (현재값 - 이전값)
+    /// todo.yaml 4단계에서 정의한 diff 구현
     /// </summary>
     public DataFrame Diff(int periods = 1, int axis = 0)
     {
         var resultColumns = new Dictionary<string, IColumn>();
 
-        if (axis == 0)
+        if (axis == 0) // 열별 차분
         {
             foreach (var columnName in _columnNames)
             {
@@ -1491,6 +1493,7 @@ public class DataFrame : IDisposable
             }
         }
 
+        // 결과가 없는 경우 원본 반환
         if (resultColumns.Count == 0)
         {
             return new DataFrame(_columns, _index);
@@ -1500,7 +1503,8 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 변화율(Percentage Change)을 계산합니다.
+    /// 변화율 계산 ((현재값 - 이전값) / 이전값)
+    /// todo.yaml 4단계에서 정의한 pct_change 구현
     /// </summary>
     public DataFrame PctChange(int periods = 1, object? fillMethod = null)
     {
@@ -1543,6 +1547,7 @@ public class DataFrame : IDisposable
             }
         }
 
+        // 결과가 없는 경우 원본 반환
         if (resultColumns.Count == 0)
         {
             return new DataFrame(_columns, _index);
@@ -1601,7 +1606,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 그룹바이(GroupBy) 연산을 수행합니다. (SIMD 가속 지원)
+    /// GroupBy 연산 (SIMD 최적화)
     /// </summary>
     public SimdGroupBy GroupBy(string key)
     {
@@ -1609,7 +1614,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 여러 키를 기준으로 그룹바이(Multi-key GroupBy) 연산을 수행합니다.
+    /// Multi-key GroupBy 연산
     /// </summary>
     public SimdGroupBy GroupBy(string[] keys)
     {
@@ -1617,7 +1622,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 데이터를 위/아래로 이동(Shift)시킵니다.
+    /// 데이터를 위/아래로 이동 (periods 만큼)
     /// </summary>
     public DataFrame Shift(int periods)
     {
@@ -1630,7 +1635,7 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 이동 윈도우(Rolling Window) 객체를 생성합니다.
+    /// 이동 윈도우 생성
     /// </summary>
     public RollingWindow Rolling(int window, int? minPeriods = null)
     {
@@ -1638,10 +1643,9 @@ public class DataFrame : IDisposable
     }
 
     /// <summary>
-    /// 시계열 데이터 리샘플링(Resampling)을 수행합니다.
+    /// 시계열 리샘플링
     /// </summary>
-    /// <param name="rule">리샘플링 규칙 (예: "D", "H", "T", "S")</param>
-    /// <param name="on">기준이 될 시간 컬럼 (지정하지 않으면 인덱스 사용)</param>
+    /// <param name="rule">D(Day), H(Hour), Min(Minute), S(Second) 등</param>
     public DateTimeResampler Resample(string rule, string? on = null)
     {
         return new DateTimeResampler(this, rule, on);
@@ -1669,7 +1673,7 @@ public class DataFrame : IDisposable
 }
 
 /// <summary>
-/// .loc[] 인덱서 (라벨 기반 접근)
+/// .loc[] 인덱서 (라벨 기반)
 /// </summary>
 public class DataFrameLocIndexer
 {
@@ -1688,7 +1692,7 @@ public class DataFrameLocIndexer
 }
 
 /// <summary>
-/// .iloc[] 인덱서 (정수 위치 기반 접근)
+/// .iloc[] 인덱서 (위치 기반)
 /// </summary>
 public class DataFrameILocIndexer
 {

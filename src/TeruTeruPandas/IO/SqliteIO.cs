@@ -6,17 +6,11 @@ using TeruTeruPandas.Core.Index;
 namespace TeruTeruPandas.IO;
 
 /// <summary>
-/// SQLite 데이터베이스와의 양방향 통신 모듈입니다.
-/// DataFrame의 데이터를 곧바로 DB 테이블에 쓰거나, SQL 쿼리 결과를 DataFrame 배열 구조로 로드합니다.
-/// 대규모 데이터 분석 결과를 관계형 데이터베이스에 영구 저장하는 용도로 최적화되어 있습니다.
+/// SQLite 데이터베이스와의 양방향 통신 모듈.
+/// DataFrame의 데이터를 곧바로 DB 테이블에 쓰거나, 쿼리 결과를 DataFrame 배열 구조로 로드합니다.
 /// </summary>
 public static class SqliteIO
 {
-    /// <summary>
-    /// SQLite 데이터베이스에 연결하여 쿼리 결과를 DataFrame으로 읽어옵니다.
-    /// </summary>
-    /// <param name="connectionString">SQLite 연결 문자열</param>
-    /// <param name="query">실행할 SQL SELECT 쿼리</param>
     public static DataFrame ReadSqlite(string connectionString, string query)
     {
         using var connection = new SqliteConnection(connectionString);
@@ -25,7 +19,7 @@ public static class SqliteIO
         using var command = new SqliteCommand(query, connection);
         using var reader = command.ExecuteReader();
 
-        // 1. 결과 셋의 컬럼 및 타입 정보 추출
+        // 컬럼 정보 가져오기
         var columnNames = new string[reader.FieldCount];
         var columnTypes = new Type[reader.FieldCount];
 
@@ -35,7 +29,7 @@ public static class SqliteIO
             columnTypes[i] = reader.GetFieldType(i);
         }
 
-        // 2. 전체 데이터를 메모리에 로드 (버퍼링)
+        // 데이터 읽기
         var rows = new List<object?[]>();
         while (reader.Read())
         {
@@ -47,40 +41,32 @@ public static class SqliteIO
             rows.Add(row);
         }
 
-        // 3. 열 단위(Columnar) 데이터 구조인 DataFrame으로 변환
+        // DataFrame 생성
         var columns = new Dictionary<string, IColumn>();
         for (int colIndex = 0; colIndex < columnNames.Length; colIndex++)
         {
             var columnName = columnNames[colIndex];
             var columnType = columnTypes[colIndex];
 
-            // 수집된 행 데이터를 열별로 분리하여 전용 컬럼 객체 생성
             columns[columnName] = CreateColumnFromSqliteData(rows, colIndex, columnType);
         }
 
         return new DataFrame(columns, new RangeIndex(rows.Count));
     }
 
-    /// <summary>
-    /// DataFrame의 데이터를 SQLite 테이블로 내보냅니다.
-    /// </summary>
-    /// <param name="dataFrame">내보낼 데이터프레임</param>
-    /// <param name="connectionString">연결 문자열</param>
-    /// <param name="tableName">대상 테이블 이름</param>
-    /// <param name="ifExists">true일 경우 기존 테이블을 삭제하고 새로 생성</param>
     public static void ToSqlite(DataFrame dataFrame, string connectionString, string tableName, bool ifExists = false)
     {
         using var connection = new SqliteConnection(connectionString);
         connection.Open();
 
-        // 1. 테이블 생성 (스키마에 맞춘 CREATE TABLE SQL 생성)
+        // 테이블 생성
         var createTableSql = GenerateCreateTableSql(dataFrame, tableName, ifExists);
         using (var command = new SqliteCommand(createTableSql, connection))
         {
             command.ExecuteNonQuery();
         }
 
-        // 2. 데이터 삽입 (매개변수화된 쿼리를 사용한 일괄 삽입)
+        // 데이터 삽입
         var insertSql = GenerateInsertSql(dataFrame, tableName);
         using (var command = new SqliteCommand(insertSql, connection))
         {
@@ -103,14 +89,10 @@ public static class SqliteIO
         }
     }
 
-    /// <summary>
-    /// SQL 결과 데이터를 바탕으로 적절한 IColumn 객체를 생성합니다.
-    /// </summary>
     private static IColumn CreateColumnFromSqliteData(List<object?[]> rows, int columnIndex, Type columnType)
     {
         var rowCount = rows.Count;
 
-        // 타입별 고속 변환 및 PrimitiveColumn 생성
         if (columnType == typeof(long) || columnType == typeof(int))
         {
             var data = new int[rowCount];
@@ -151,7 +133,7 @@ public static class SqliteIO
 
             return new PrimitiveColumn<double>(data, naMask);
         }
-        else // 기본적으로 문자열 컬럼으로 처리
+        else // string
         {
             var data = new string?[rowCount];
             var naMask = new bool[rowCount];
@@ -173,9 +155,6 @@ public static class SqliteIO
         }
     }
 
-    /// <summary>
-    /// 데이터프레임 스키마를 바탕으로 SQLite 테이블 생성 SQL을 생성합니다.
-    /// </summary>
     private static string GenerateCreateTableSql(DataFrame dataFrame, string tableName, bool ifExists)
     {
         var dropTable = ifExists ? $"DROP TABLE IF EXISTS {tableName};" : "";
@@ -195,7 +174,7 @@ public static class SqliteIO
     }
 
     /// <summary>
-    /// SQLite 데이터베이스 파일에 포함된 모든 테이블 이름 목록을 가져옵니다.
+    /// SQLite 데이터베이스의 모든 테이블 이름 가져오기
     /// </summary>
     public static List<string> GetTableNames(string dbPath)
     {
@@ -217,7 +196,7 @@ public static class SqliteIO
     }
 
     /// <summary>
-    /// 파일 경로와 테이블 이름을 지정하여 SQLite 테이블의 전체 내용을 DataFrame으로 읽어옵니다.
+    /// SQLite 데이터베이스에서 특정 테이블 읽기 (파일 경로 + 테이블명)
     /// </summary>
     public static DataFrame ReadSqliteTable(string dbPath, string tableName)
     {
@@ -226,9 +205,6 @@ public static class SqliteIO
         return ReadSqlite(connectionString, query);
     }
 
-    /// <summary>
-    /// .NET 데이터 타입을 SQLite의 데이터 타입으로 매핑합니다.
-    /// </summary>
     private static string GetSqliteType(IColumn column)
     {
         return column.DataType.Name switch

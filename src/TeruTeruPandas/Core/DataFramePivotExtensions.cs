@@ -41,26 +41,25 @@ public static class DataFramePivotExtensions
                 valueMap[(idxVal, colVal)] = valueColumn.GetValue(i);
             }
 
-            var sortedIndexes = uniqueIndexes.Where(x => x != null).OrderBy(x => x!).ToArray();
-            var sortedColumns = uniqueColumns.Where(x => x != null).OrderBy(x => x!).ToArray();
+            var sortedIndexes = uniqueIndexes.OrderBy(x => x).ToArray();
+            var sortedColumns = uniqueColumns.OrderBy(x => x).ToArray();
 
             // 2. 결과 데이터 생성
             var resultColumns = new Dictionary<string, IColumn>();
 
             // 인덱스 컬럼
-            resultColumns[indexCol] = CreateColumnFromObjects(sortedIndexes!, indexColumn.DataType);
+            resultColumns[indexCol] = CreateColumnFromObjects(sortedIndexes, indexColumn.DataType);
 
             // 피벗된 값 컬럼들
             foreach (var colKey in sortedColumns)
             {
-                if (colKey == null) continue;
                 var colName = $"{valueCol}_{colKey}";
                 var colValues = new object?[sortedIndexes.Length];
 
                 for (int i = 0; i < sortedIndexes.Length; i++)
                 {
                     var idxKey = sortedIndexes[i];
-                    if (idxKey != null && valueMap.TryGetValue((idxKey, colKey), out var val))
+                    if (valueMap.TryGetValue((idxKey, colKey), out var val))
                     {
                         colValues[i] = val;
                     }
@@ -70,7 +69,7 @@ public static class DataFramePivotExtensions
                     }
                 }
 
-                resultColumns[colName] = CreateColumnFromObjects(colValues!, valueColumn.DataType);
+                resultColumns[colName] = CreateColumnFromObjects(colValues, valueColumn.DataType);
             }
 
             return new DataFrame(resultColumns);

@@ -409,11 +409,6 @@ public static class DataFrameJoinExtensions
             var typedValues = values.Select(v => v?.ToString()).ToArray();
             return new StringColumn(typedValues);
         }
-        else if (targetType == typeof(float[]))
-        {
-            var typedData = values.Select(v => v as float[] ?? Array.Empty<float>()).ToArray();
-            return new VectorColumn(typedData, naMask);
-        }
 
         throw new NotSupportedException($"Type {targetType} not supported");
     }
