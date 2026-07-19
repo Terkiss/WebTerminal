@@ -247,7 +247,9 @@ public sealed class AgentProviderSessionsController : ControllerBase
         smokeTest = new
         {
             scriptPath = "tools/agent-runtime/provider_harness_smoke.py",
-            command = $"python tools/agent-runtime/provider_harness_smoke.py --base-url {baseUrl} --api-key {apiKey}"
+            command = $"python tools/agent-runtime/provider_harness_smoke.py --base-url {baseUrl} --api-key {apiKey}",
+            liveE2eScriptPath = "tools/agent-runtime/provider_live_e2e.py",
+            liveE2eCommand = $"python tools/agent-runtime/provider_live_e2e.py --origin {baseUrl[..^3]} --username <admin username> --password <admin password>"
         }
     };
 }

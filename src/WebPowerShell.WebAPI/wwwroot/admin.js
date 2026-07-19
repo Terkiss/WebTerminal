@@ -256,7 +256,8 @@ document.addEventListener('DOMContentLoaded', () => {
             `hook_command=${hookBridge.command || ''}`,
             `agy_hooks=${JSON.stringify(hookBridge.agyHooks || {}, null, 2)}`,
             '',
-            `smoke_test=${smokeTest.command || ''}`
+            `smoke_test=${smokeTest.command || ''}`,
+            `live_e2e=${smokeTest.liveE2eCommand || ''}`
         ].join('\n');
     };
 
