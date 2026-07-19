@@ -38,9 +38,19 @@ TaskScheduler.UnobservedTaskException += (sender, e) =>
 var builder = WebApplication.CreateBuilder(args);
 
 
-// DB Context (AuditLog only)
+// DB Context for audit logs and agent provider session metadata.
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseInMemoryDatabase("WebPowerShellDb"));
+{
+    var connectionString = builder.Configuration.GetConnectionString("WebPowerShellDb");
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        var memoryDir = Path.Combine(AppContext.BaseDirectory, "MEMORY");
+        Directory.CreateDirectory(memoryDir);
+        connectionString = $"Data Source={Path.Combine(memoryDir, "webterminal.db")}";
+    }
+
+    options.UseSqlite(connectionString);
+});
 
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
@@ -190,6 +200,12 @@ builder.Services.AddRateLimiter(options =>
 });
 
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    dbContext.Database.EnsureCreated();
+}
 
 // Configure the HTTP request pipeline.
 app.UseForwardedHeaders();
