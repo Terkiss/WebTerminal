@@ -707,6 +707,114 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task ChatCompletion_RespectsToolChoiceNone()
+    {
+        SequencedRuntimeManager.LastPrompt = null;
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("no tools");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-tool-choice-none-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-tool-choice-none-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Tool Choice None Provider"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var chatRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "answer directly" } },
+                tools = new[] { new { type = "function", function = new { name = "read_text_file" } } },
+                tool_choice = "none"
+            })
+        };
+        chatRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var chatResponse = await client.SendAsync(chatRequest);
+
+        Assert.Equal(HttpStatusCode.OK, chatResponse.StatusCode);
+        Assert.Equal("answer directly", SequencedRuntimeManager.LastPrompt);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_IncludesForcedToolChoiceInstruction()
+    {
+        SequencedRuntimeManager.LastPrompt = null;
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("forced tool prompt accepted");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-tool-choice-forced-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-tool-choice-forced-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Forced Tool Provider"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var chatRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "use chosen tool" } },
+                tools = new[] { new { type = "function", function = new { name = "read_text_file" } } },
+                tool_choice = new
+                {
+                    type = "function",
+                    function = new { name = "read_text_file" }
+                }
+            })
+        };
+        chatRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var chatResponse = await client.SendAsync(chatRequest);
+
+        Assert.Equal(HttpStatusCode.OK, chatResponse.StatusCode);
+        Assert.Contains("Tool choice: call only the function named read_text_file.", SequencedRuntimeManager.LastPrompt);
+    }
+
+    [Fact]
     public async Task ChatCompletion_RejectsDuplicateIdempotencyKey()
     {
         CountingRuntimeManager.CallCount = 0;

@@ -343,7 +343,7 @@ Continue from this tool result. If another tool is needed, return the tool call 
 """;
         }
 
-        if (request.Tools is not { Count: > 0 })
+        if (request.Tools is not { Count: > 0 } || IsToolChoiceNone(request.ToolChoice))
         {
             return content;
         }
@@ -351,15 +351,52 @@ Continue from this tool result. If another tool is needed, return the tool call 
         const string toolCallFormat =
             """{"tool_calls":[{"id":"call_<unique>","type":"function","function":{"name":"<tool name>","arguments":"<JSON string arguments>"}}]}""";
         var toolsJson = JsonSerializer.Serialize(request.Tools, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var toolChoiceInstruction = GetToolChoiceInstruction(request.ToolChoice);
         return $"""
 {content}
 
 Available external tools are provided below. WebTerminal cannot execute them. If a tool is required, respond with only this JSON object:
 {toolCallFormat}
+{toolChoiceInstruction}
 
 Tools:
 {toolsJson}
 """;
+    }
+
+    private static bool IsToolChoiceNone(JsonElement? toolChoice)
+    {
+        return toolChoice.HasValue &&
+            toolChoice.Value.ValueKind == JsonValueKind.String &&
+            string.Equals(toolChoice.Value.GetString(), "none", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetToolChoiceInstruction(JsonElement? toolChoice)
+    {
+        if (!toolChoice.HasValue)
+        {
+            return string.Empty;
+        }
+
+        var value = toolChoice.Value;
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            return string.Equals(value.GetString(), "required", StringComparison.OrdinalIgnoreCase)
+                ? $"{Environment.NewLine}Tool choice: you must return a tool call."
+                : string.Empty;
+        }
+
+        if (value.ValueKind == JsonValueKind.Object &&
+            value.TryGetProperty("function", out var functionElement) &&
+            functionElement.ValueKind == JsonValueKind.Object &&
+            functionElement.TryGetProperty("name", out var nameElement) &&
+            nameElement.ValueKind == JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(nameElement.GetString()))
+        {
+            return $"{Environment.NewLine}Tool choice: call only the function named {nameElement.GetString()}.";
+        }
+
+        return string.Empty;
     }
 
     private static JsonElement? FindMatchingToolCall(ChatCompletionRequest request, string? toolCallId)
@@ -572,7 +609,7 @@ public sealed record ChatCompletionRequest(
     [property: JsonPropertyName("messages")] IReadOnlyList<ChatMessage> Messages,
     [property: JsonPropertyName("stream")] bool Stream = false,
     [property: JsonPropertyName("tools")] IReadOnlyList<JsonElement>? Tools = null,
-    [property: JsonPropertyName("tool_choice")] object? ToolChoice = null,
+    [property: JsonPropertyName("tool_choice")] JsonElement? ToolChoice = null,
     [property: JsonPropertyName("temperature")] double? Temperature = null,
     [property: JsonPropertyName("max_tokens")] int? MaxTokens = null,
     [property: JsonPropertyName("user")] string? User = null,
