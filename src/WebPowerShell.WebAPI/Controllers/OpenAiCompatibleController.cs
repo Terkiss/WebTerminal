@@ -152,37 +152,10 @@ public sealed class OpenAiCompatibleController : ControllerBase
 
             if (isToolResultRequest)
             {
-                var newToolMessages = new List<ChatMessage>();
-                for (int i = request.Messages.Count - 1; i >= 0; i--)
+                var validationError = await ValidateChatToolResultsAsync(session, request, cancellationToken);
+                if (validationError != null)
                 {
-                    if (string.Equals(request.Messages[i].Role, "assistant", StringComparison.OrdinalIgnoreCase)) break;
-                    if (string.Equals(request.Messages[i].Role, "tool", StringComparison.OrdinalIgnoreCase))
-                    {
-                        newToolMessages.Add(request.Messages[i]);
-                    }
-                }
-
-                var resultIds = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var tm in newToolMessages)
-                {
-                    if (string.IsNullOrWhiteSpace(tm.ToolCallId) ||
-                        !session.ExpectedToolCallIds.Contains(tm.ToolCallId) ||
-                        !resultIds.Add(tm.ToolCallId))
-                    {
-                        await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "UnknownToolCallId", cancellationToken);
-                        return BadRequest(new { error = new { message = $"Unknown or duplicate tool_call_id: {tm.ToolCallId}", type = "invalid_request_error" } });
-                    }
-                }
-
-                if (resultIds.Count != session.ExpectedToolCallIds.Count)
-                {
-                    await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "MissingToolResults", cancellationToken);
-                    return BadRequest(new { error = new { message = "All pending tool results must be provided.", type = "invalid_request_error" } });
-                }
-
-                foreach (var resultId in resultIds)
-                {
-                    session.ExpectedToolCallIds.Remove(resultId);
+                    return validationError;
                 }
             }
 
@@ -332,19 +305,11 @@ public sealed class OpenAiCompatibleController : ControllerBase
 
         if (isToolResultRequest)
         {
-            if (string.IsNullOrWhiteSpace(toolCallId) || !session.ExpectedToolCallIds.Contains(toolCallId))
+            var validationError = await ValidateResponseToolResultAsync(session, toolCallId, cancellationToken);
+            if (validationError != null)
             {
-                await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "UnknownToolCallId", cancellationToken);
-                return BadRequest(new { error = new { message = $"Unknown or duplicate call_id: {toolCallId}", type = "invalid_request_error" } });
+                return validationError;
             }
-
-            if (session.ExpectedToolCallIds.Count != 1)
-            {
-                await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "MissingToolResults", cancellationToken);
-                return BadRequest(new { error = new { message = "All pending tool results must be provided.", type = "invalid_request_error" } });
-            }
-
-            session.ExpectedToolCallIds.Remove(toolCallId);
         }
 
         if (!CanAcceptRequest(session.State, isToolResultRequest))
@@ -802,6 +767,80 @@ Continue from this tool result. If another tool is needed, return the tool call 
 
         var apiKey = header[prefix.Length..].Trim();
         return _registry.FindByApiKey(apiKey);
+    }
+
+    private async Task<IActionResult?> ValidateChatToolResultsAsync(
+        ProviderSession session,
+        ChatCompletionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var resultIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var toolMessage in GetNewToolMessages(request))
+        {
+            if (string.IsNullOrWhiteSpace(toolMessage.ToolCallId) ||
+                !session.ExpectedToolCallIds.Contains(toolMessage.ToolCallId) ||
+                !resultIds.Add(toolMessage.ToolCallId))
+            {
+                await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "UnknownToolCallId", cancellationToken);
+                return InvalidRequest($"Unknown or duplicate tool_call_id: {toolMessage.ToolCallId}");
+            }
+        }
+
+        if (resultIds.Count != session.ExpectedToolCallIds.Count)
+        {
+            await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "MissingToolResults", cancellationToken);
+            return InvalidRequest("All pending tool results must be provided.");
+        }
+
+        foreach (var resultId in resultIds)
+        {
+            session.ExpectedToolCallIds.Remove(resultId);
+        }
+
+        return null;
+    }
+
+    private async Task<IActionResult?> ValidateResponseToolResultAsync(
+        ProviderSession session,
+        string? toolCallId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(toolCallId) || !session.ExpectedToolCallIds.Contains(toolCallId))
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "UnknownToolCallId", cancellationToken);
+            return InvalidRequest($"Unknown or duplicate call_id: {toolCallId}");
+        }
+
+        if (session.ExpectedToolCallIds.Count != 1)
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "MissingToolResults", cancellationToken);
+            return InvalidRequest("All pending tool results must be provided.");
+        }
+
+        session.ExpectedToolCallIds.Remove(toolCallId);
+        return null;
+    }
+
+    private static IEnumerable<ChatMessage> GetNewToolMessages(ChatCompletionRequest request)
+    {
+        for (var i = request.Messages.Count - 1; i >= 0; i--)
+        {
+            var message = request.Messages[i];
+            if (string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase))
+            {
+                yield break;
+            }
+
+            if (string.Equals(message.Role, "tool", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return message;
+            }
+        }
+    }
+
+    private BadRequestObjectResult InvalidRequest(string message)
+    {
+        return BadRequest(new { error = new { message, type = "invalid_request_error" } });
     }
 
     private string? GetIdempotencyKey()
