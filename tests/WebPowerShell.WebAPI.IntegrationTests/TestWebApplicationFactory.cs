@@ -13,6 +13,7 @@ using Microsoft.Extensions.Hosting;
 using WebPowerShell.Application.Common.Interfaces;
 using WebPowerShell.Domain.Entities;
 using WebPowerShell.Infrastructure.Persistence;
+using WebPowerShell.WebAPI.Services;
 
 namespace WebPowerShell.WebAPI.IntegrationTests
 {
@@ -54,6 +55,7 @@ namespace WebPowerShell.WebAPI.IntegrationTests
                 // Keep MemoryPersistenceService injectable for hubs, but prevent
                 // background/final SQLite persistence from racing between test hosts.
                 services.RemoveAll<IHostedService>();
+                services.AddHostedService<AdminBootstrapService>();
             });
         }
 

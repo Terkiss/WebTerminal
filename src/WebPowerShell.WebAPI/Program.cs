@@ -20,6 +20,7 @@ using WebPowerShell.Infrastructure.Security;
 using WebPowerShell.Infrastructure.ConPTY;
 using WebPowerShell.WebAPI.Hubs;
 using WebPowerShell.WebAPI.Middleware;
+using WebPowerShell.WebAPI.Services;
 using WebPowerShell.Application.Services;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
@@ -71,6 +72,7 @@ builder.Services.AddSingleton<IUserRepository>(sp => sp.GetRequiredService<TeruT
 builder.Services.AddSingleton<WebPowerShell.Infrastructure.Persistence.MemoryPersistenceService>();
 builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
     sp.GetRequiredService<WebPowerShell.Infrastructure.Persistence.MemoryPersistenceService>());
+builder.Services.AddHostedService<AdminBootstrapService>();
 builder.Services.AddSingleton<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<ITerminalSessionManager, TerminalSessionManager>();
@@ -454,43 +456,6 @@ app.MapGet("/api/weatherforecast", () =>
 .WithName("GetWeatherForecast")
 .RequireAuthorization();
 
-
-// Seed/bootstrap the local admin account. Existing accounts are reset only
-// when AdminBootstrap:ResetExisting is explicitly enabled.
-{
-    var userRepo = app.Services.GetRequiredService<IUserRepository>();
-    var hasher = app.Services.GetRequiredService<IPasswordHasher>();
-    var bootstrapUsername = app.Configuration["AdminBootstrap:Username"] ?? "terukiss";
-    var bootstrapPassword = app.Configuration["AdminBootstrap:Password"] ?? "dbslwms@skshgk1";
-    var resetExisting = bool.TryParse(app.Configuration["AdminBootstrap:ResetExisting"], out var shouldReset) && shouldReset;
-    var existing = await userRepo.GetByUsernameAsync(bootstrapUsername);
-    if (!existing.IsSuccess)
-    {
-        await userRepo.SaveAsync(new WebPowerShell.Domain.Entities.User
-        {
-            Id = Guid.Parse("a0a0a0a0-b1b1-c2c2-d3d3-e4e4e4e4e4e4"),
-            Username = bootstrapUsername,
-            PasswordHash = hasher.HashPassword(bootstrapPassword),
-            LastPasswordChangeDate = DateTimeOffset.UtcNow,
-            IsActive = true,
-            IsAdmin = true,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow
-        });
-    }
-    else if (resetExisting && !string.IsNullOrWhiteSpace(bootstrapPassword))
-    {
-        var admin = existing.Value!;
-        admin.PasswordHash = hasher.HashPassword(bootstrapPassword);
-        admin.LastPasswordChangeDate = DateTimeOffset.UtcNow;
-        admin.IsActive = true;
-        admin.IsAdmin = true;
-        admin.FailedLoginCount = 0;
-        admin.LockedUntil = null;
-        admin.UpdatedAt = DateTimeOffset.UtcNow;
-        await userRepo.SaveAsync(admin);
-    }
-}
 
 app.Run();
 
