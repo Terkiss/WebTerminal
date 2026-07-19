@@ -210,7 +210,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const key = document.getElementById('provider-api-key');
             key.textContent = [
                 `${provider.baseUrl}  model=${provider.model}`,
-                `hook=${provider.hookBridge?.endpoint || ''}`,
+                `hook=${provider.hookBridge?.enabled ? 'enabled' : 'disabled'}`,
+                `hook_endpoint=${provider.hookBridge?.endpoint || ''}`,
                 `WEBTERMINAL_PROVIDER_SESSION_ID=${provider.sessionId}`
             ].join('\n');
             card.classList.remove('hidden');

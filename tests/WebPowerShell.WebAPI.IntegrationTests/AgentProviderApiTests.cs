@@ -72,6 +72,7 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         Assert.Equal(
             "https://localhost/api/internal/agent-events",
             detail.RootElement.GetProperty("hookBridge").GetProperty("endpoint").GetString());
+        Assert.True(detail.RootElement.GetProperty("hookBridge").GetProperty("enabled").GetBoolean());
 
         using var modelsRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
         modelsRequest.Headers.Authorization = new("Bearer", apiKey);
@@ -90,6 +91,40 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         Assert.Contains(auditLogs, log => log.Command == "agent.provider.session.create" && log.ResultStatus == "Success");
         Assert.Contains(auditLogs, log => log.Command == "agent.provider.models" && log.ResultStatus == "Success");
         Assert.Contains(auditLogs, log => log.Command == "agent.provider.session.revoke" && log.ResultStatus == "Success");
+    }
+
+    [Fact]
+    public async Task ProviderSessionConfig_ShowsDisabledHookBridgeWhenSecretIsMissing()
+    {
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, configurationBuilder) =>
+            {
+                configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["AgentRuntime:InternalEventSecret"] = string.Empty
+                });
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-no-hook-secret-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-no-hook-secret-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "No Hook Secret Provider"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        Assert.False(created.RootElement.GetProperty("hookBridge").GetProperty("enabled").GetBoolean());
     }
 
     [Fact]

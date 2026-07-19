@@ -14,13 +14,16 @@ public sealed class AgentProviderSessionsController : ControllerBase
 {
     private readonly ProviderSessionRegistry _registry;
     private readonly IAuditLogRepository _auditLogRepository;
+    private readonly IConfiguration _configuration;
 
     public AgentProviderSessionsController(
         ProviderSessionRegistry registry,
-        IAuditLogRepository auditLogRepository)
+        IAuditLogRepository auditLogRepository,
+        IConfiguration configuration)
     {
         _registry = registry;
         _auditLogRepository = auditLogRepository;
+        _configuration = configuration;
     }
 
     [HttpPost]
@@ -57,6 +60,7 @@ public sealed class AgentProviderSessionsController : ControllerBase
             },
             hookBridge = new
             {
+                enabled = IsHookBridgeEnabled(),
                 endpoint = internalEventEndpoint,
                 providerSessionId = result.Session.SessionId,
                 scriptPath = "tools/agent-runtime/agy_hook_bridge.py",
@@ -84,7 +88,7 @@ public sealed class AgentProviderSessionsController : ControllerBase
             return Unauthorized();
         }
 
-        var sessions = _registry.GetForUser(ownerUserId).Select(session => ToDto(session, GetOrigin()));
+        var sessions = _registry.GetForUser(ownerUserId).Select(session => ToDto(session, GetOrigin(), IsHookBridgeEnabled()));
 
         return Ok(sessions);
     }
@@ -103,7 +107,7 @@ public sealed class AgentProviderSessionsController : ControllerBase
             return NotFound();
         }
 
-        return Ok(ToDto(session, GetOrigin()));
+        return Ok(ToDto(session, GetOrigin(), IsHookBridgeEnabled()));
     }
 
     [HttpDelete("{sessionId:guid}")]
@@ -159,7 +163,9 @@ public sealed class AgentProviderSessionsController : ControllerBase
 
     private static string GetInternalEventEndpoint(string origin) => $"{origin}/api/internal/agent-events";
 
-    private static object ToDto(ProviderSession session, string origin) => new
+    private bool IsHookBridgeEnabled() => !string.IsNullOrWhiteSpace(_configuration["AgentRuntime:InternalEventSecret"]);
+
+    private static object ToDto(ProviderSession session, string origin, bool hookBridgeEnabled) => new
     {
         session.SessionId,
         session.DisplayName,
@@ -183,6 +189,7 @@ public sealed class AgentProviderSessionsController : ControllerBase
         },
         hookBridge = new
         {
+            enabled = hookBridgeEnabled,
             endpoint = GetInternalEventEndpoint(origin),
             providerSessionId = session.SessionId,
             scriptPath = "tools/agent-runtime/agy_hook_bridge.py",
