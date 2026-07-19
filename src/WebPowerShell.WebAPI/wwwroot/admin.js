@@ -158,6 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td title="${escapeHtml(provider.conversationId || '')}">${escapeHtml(conversation)}</td>
                 <td>${new Date(provider.expiresAt).toLocaleString()}</td>
                 <td>
+                    <button class="btn-secondary" onclick="showProviderConfig('${provider.sessionId}')">Config</button>
                     <button class="btn-danger" onclick="revokeProvider('${provider.sessionId}')">Revoke</button>
                 </td>
             `;
@@ -198,6 +199,24 @@ document.addEventListener('DOMContentLoaded', () => {
         const key = document.getElementById('provider-api-key');
         key.textContent = `${created.baseUrl}  model=${created.model}  key=${created.apiKey}`;
         card.classList.remove('hidden');
+    };
+
+    window.showProviderConfig = async (id) => {
+        try {
+            const res = await fetch(`/api/agent/provider-sessions/${id}`);
+            if (!res.ok) throw res;
+            const provider = await res.json();
+            const card = document.getElementById('provider-key-card');
+            const key = document.getElementById('provider-api-key');
+            key.textContent = [
+                `${provider.baseUrl}  model=${provider.model}`,
+                `hook=${provider.hookBridge?.endpoint || ''}`,
+                `WEBTERMINAL_PROVIDER_SESSION_ID=${provider.sessionId}`
+            ].join('\n');
+            card.classList.remove('hidden');
+        } catch (e) {
+            alert('Failed to load provider config');
+        }
     };
 
     window.revokeProvider = async (id) => {

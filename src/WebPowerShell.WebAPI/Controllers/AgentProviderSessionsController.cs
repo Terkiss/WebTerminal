@@ -38,9 +38,9 @@ public sealed class AgentProviderSessionsController : ControllerBase
             cancellationToken);
         await WriteAuditAsync(ownerUserId, "agent.provider.session.create", result.Session, "Success", cancellationToken);
 
-        var origin = $"{Request.Scheme}://{Request.Host}";
-        var baseUrl = $"{origin}/v1";
-        var internalEventEndpoint = $"{origin}/api/internal/agent-events";
+        var origin = GetOrigin();
+        var baseUrl = GetProviderBaseUrl(origin);
+        var internalEventEndpoint = GetInternalEventEndpoint(origin);
         return Ok(new
         {
             sessionId = result.Session.SessionId,
@@ -84,7 +84,7 @@ public sealed class AgentProviderSessionsController : ControllerBase
             return Unauthorized();
         }
 
-        var sessions = _registry.GetForUser(ownerUserId).Select(ToDto);
+        var sessions = _registry.GetForUser(ownerUserId).Select(session => ToDto(session, GetOrigin()));
 
         return Ok(sessions);
     }
@@ -103,7 +103,7 @@ public sealed class AgentProviderSessionsController : ControllerBase
             return NotFound();
         }
 
-        return Ok(ToDto(session));
+        return Ok(ToDto(session, GetOrigin()));
     }
 
     [HttpDelete("{sessionId:guid}")]
@@ -153,7 +153,13 @@ public sealed class AgentProviderSessionsController : ControllerBase
         }, cancellationToken);
     }
 
-    private static object ToDto(ProviderSession session) => new
+    private string GetOrigin() => $"{Request.Scheme}://{Request.Host}";
+
+    private static string GetProviderBaseUrl(string origin) => $"{origin}/v1";
+
+    private static string GetInternalEventEndpoint(string origin) => $"{origin}/api/internal/agent-events";
+
+    private static object ToDto(ProviderSession session, string origin) => new
     {
         session.SessionId,
         session.DisplayName,
@@ -167,11 +173,22 @@ public sealed class AgentProviderSessionsController : ControllerBase
         session.UpdatedAt,
         session.ExpiresAt,
         session.FailureReason,
+        baseUrl = GetProviderBaseUrl(origin),
+        model = "agy",
+        harness = new
+        {
+            baseUrl = GetProviderBaseUrl(origin),
+            model = "agy",
+            authorization = "Bearer <apiKey>"
+        },
         hookBridge = new
         {
+            endpoint = GetInternalEventEndpoint(origin),
+            providerSessionId = session.SessionId,
             scriptPath = "tools/agent-runtime/agy_hook_bridge.py",
             environment = new
             {
+                WEBTERMINAL_AGENT_EVENT_ENDPOINT = GetInternalEventEndpoint(origin),
                 WEBTERMINAL_PROVIDER_SESSION_ID = session.SessionId.ToString(),
                 WEBTERMINAL_AGENT_EVENT_SECRET = "<configured server secret>"
             }

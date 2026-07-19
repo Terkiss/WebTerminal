@@ -410,7 +410,8 @@ body {
     max-width: 100%;
     padding: 12px;
     overflow-x: auto;
-    white-space: nowrap;
+    white-space: pre-wrap;
+    word-break: break-all;
     color: #bbf7d0;
     background: rgba(0, 0, 0, 0.3);
     border-radius: 8px;

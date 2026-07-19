@@ -63,6 +63,16 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
             "tools/agent-runtime/agy_hook_bridge.py",
             created.RootElement.GetProperty("hookBridge").GetProperty("scriptPath").GetString());
 
+        var detailResponse = await client.GetAsync($"/api/agent/provider-sessions/{sessionId}");
+        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
+        var detail = await ReadJsonAsync(detailResponse);
+        Assert.False(detail.RootElement.TryGetProperty("apiKey", out _));
+        Assert.Equal("https://localhost/v1", detail.RootElement.GetProperty("baseUrl").GetString());
+        Assert.Equal("agy", detail.RootElement.GetProperty("harness").GetProperty("model").GetString());
+        Assert.Equal(
+            "https://localhost/api/internal/agent-events",
+            detail.RootElement.GetProperty("hookBridge").GetProperty("endpoint").GetString());
+
         using var modelsRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
         modelsRequest.Headers.Authorization = new("Bearer", apiKey);
         var modelsResponse = await client.SendAsync(modelsRequest);
