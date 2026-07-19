@@ -62,6 +62,21 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         Assert.Equal(
             "tools/agent-runtime/agy_hook_bridge.py",
             created.RootElement.GetProperty("hookBridge").GetProperty("scriptPath").GetString());
+        Assert.Equal(
+            apiKey,
+            created.RootElement
+                .GetProperty("connectionManifest")
+                .GetProperty("openAi")
+                .GetProperty("environment")
+                .GetProperty("OPENAI_API_KEY")
+                .GetString());
+        Assert.Contains(
+            apiKey!,
+            created.RootElement
+                .GetProperty("connectionManifest")
+                .GetProperty("smokeTest")
+                .GetProperty("command")
+                .GetString());
 
         var detailResponse = await client.GetAsync($"/api/agent/provider-sessions/{sessionId}");
         Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
@@ -73,6 +88,21 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
             "https://localhost/api/internal/agent-events",
             detail.RootElement.GetProperty("hookBridge").GetProperty("endpoint").GetString());
         Assert.True(detail.RootElement.GetProperty("hookBridge").GetProperty("enabled").GetBoolean());
+        Assert.Equal(
+            "<apiKey>",
+            detail.RootElement
+                .GetProperty("connectionManifest")
+                .GetProperty("openAi")
+                .GetProperty("environment")
+                .GetProperty("OPENAI_API_KEY")
+                .GetString());
+        Assert.DoesNotContain(
+            apiKey!,
+            detail.RootElement
+                .GetProperty("connectionManifest")
+                .GetProperty("smokeTest")
+                .GetProperty("command")
+                .GetString());
 
         using var modelsRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
         modelsRequest.Headers.Authorization = new("Bearer", apiKey);

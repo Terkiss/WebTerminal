@@ -197,7 +197,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const showProviderKey = (created) => {
         const card = document.getElementById('provider-key-card');
         const key = document.getElementById('provider-api-key');
-        key.textContent = `${created.baseUrl}  model=${created.model}  key=${created.apiKey}`;
+        key.textContent = formatProviderManifest(created.connectionManifest || created);
         card.classList.remove('hidden');
     };
 
@@ -208,12 +208,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const provider = await res.json();
             const card = document.getElementById('provider-key-card');
             const key = document.getElementById('provider-api-key');
-            key.textContent = [
-                `${provider.baseUrl}  model=${provider.model}`,
-                `hook=${provider.hookBridge?.enabled ? 'enabled' : 'disabled'}`,
-                `hook_endpoint=${provider.hookBridge?.endpoint || ''}`,
-                `WEBTERMINAL_PROVIDER_SESSION_ID=${provider.sessionId}`
-            ].join('\n');
+            key.textContent = formatProviderManifest(provider.connectionManifest || provider);
             card.classList.remove('hidden');
         } catch (e) {
             alert('Failed to load provider config');
@@ -238,6 +233,30 @@ document.addEventListener('DOMContentLoaded', () => {
             .replaceAll('>', '&gt;')
             .replaceAll('"', '&quot;')
             .replaceAll("'", '&#039;');
+    };
+
+    const formatProviderManifest = (manifest) => {
+        const openAi = manifest.openAi || manifest.harness || {};
+        const hookBridge = manifest.hookBridge || {};
+        const smokeTest = manifest.smokeTest || {};
+        const env = openAi.environment || {};
+        const hookEnv = hookBridge.environment || {};
+
+        return [
+            `OPENAI_BASE_URL=${env.OPENAI_BASE_URL || manifest.baseUrl || ''}`,
+            `OPENAI_API_KEY=${env.OPENAI_API_KEY || '<apiKey>'}`,
+            `OPENAI_MODEL=${env.OPENAI_MODEL || manifest.model || 'agy'}`,
+            `WEBTERMINAL_PROVIDER_BASE_URL=${env.WEBTERMINAL_PROVIDER_BASE_URL || manifest.baseUrl || ''}`,
+            `WEBTERMINAL_PROVIDER_API_KEY=${env.WEBTERMINAL_PROVIDER_API_KEY || '<apiKey>'}`,
+            '',
+            `hook=${hookBridge.enabled ? 'enabled' : 'disabled'}`,
+            `WEBTERMINAL_AGENT_EVENT_ENDPOINT=${hookEnv.WEBTERMINAL_AGENT_EVENT_ENDPOINT || hookBridge.endpoint || ''}`,
+            `WEBTERMINAL_PROVIDER_SESSION_ID=${hookEnv.WEBTERMINAL_PROVIDER_SESSION_ID || manifest.sessionId || ''}`,
+            `WEBTERMINAL_AGENT_EVENT_SECRET=${hookEnv.WEBTERMINAL_AGENT_EVENT_SECRET || '<configured server secret>'}`,
+            `hook_command=${hookBridge.command || ''}`,
+            '',
+            `smoke_test=${smokeTest.command || ''}`
+        ].join('\n');
     };
 
     const fetchUsers = async () => {

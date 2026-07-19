@@ -52,25 +52,9 @@ public sealed class AgentProviderSessionsController : ControllerBase
             baseUrl,
             model = "agy",
             apiKey = result.PlaintextApiKey,
-            harness = new
-            {
-                baseUrl,
-                model = "agy",
-                authorization = "Bearer <apiKey>"
-            },
-            hookBridge = new
-            {
-                enabled = IsHookBridgeEnabled(),
-                endpoint = internalEventEndpoint,
-                providerSessionId = result.Session.SessionId,
-                scriptPath = "tools/agent-runtime/agy_hook_bridge.py",
-                environment = new
-                {
-                    WEBTERMINAL_AGENT_EVENT_ENDPOINT = internalEventEndpoint,
-                    WEBTERMINAL_PROVIDER_SESSION_ID = result.Session.SessionId.ToString(),
-                    WEBTERMINAL_AGENT_EVENT_SECRET = "<configured server secret>"
-                }
-            },
+            harness = BuildHarnessConfig(baseUrl, result.PlaintextApiKey),
+            hookBridge = BuildHookBridgeConfig(result.Session, internalEventEndpoint, IsHookBridgeEnabled()),
+            connectionManifest = BuildConnectionManifest(result.Session, baseUrl, internalEventEndpoint, IsHookBridgeEnabled(), result.PlaintextApiKey),
             expiresAt = result.Session.ExpiresAt,
             agy = new
             {
@@ -165,7 +149,11 @@ public sealed class AgentProviderSessionsController : ControllerBase
 
     private bool IsHookBridgeEnabled() => !string.IsNullOrWhiteSpace(_configuration["AgentRuntime:InternalEventSecret"]);
 
-    private static object ToDto(ProviderSession session, string origin, bool hookBridgeEnabled) => new
+    private static object ToDto(ProviderSession session, string origin, bool hookBridgeEnabled)
+    {
+        var baseUrl = GetProviderBaseUrl(origin);
+        var internalEventEndpoint = GetInternalEventEndpoint(origin);
+        return new
     {
         session.SessionId,
         session.DisplayName,
@@ -179,26 +167,63 @@ public sealed class AgentProviderSessionsController : ControllerBase
         session.UpdatedAt,
         session.ExpiresAt,
         session.FailureReason,
-        baseUrl = GetProviderBaseUrl(origin),
+        baseUrl,
         model = "agy",
-        harness = new
+        harness = BuildHarnessConfig(baseUrl, "<apiKey>"),
+        hookBridge = BuildHookBridgeConfig(session, internalEventEndpoint, hookBridgeEnabled),
+        connectionManifest = BuildConnectionManifest(session, baseUrl, internalEventEndpoint, hookBridgeEnabled, "<apiKey>")
+    };
+    }
+
+    private static object BuildHarnessConfig(string baseUrl, string apiKey) => new
+    {
+        baseUrl,
+        model = "agy",
+        authorization = $"Bearer {apiKey}",
+        environment = new Dictionary<string, string>
         {
-            baseUrl = GetProviderBaseUrl(origin),
-            model = "agy",
-            authorization = "Bearer <apiKey>"
+            ["OPENAI_BASE_URL"] = baseUrl,
+            ["OPENAI_API_KEY"] = apiKey,
+            ["OPENAI_MODEL"] = "agy",
+            ["WEBTERMINAL_PROVIDER_BASE_URL"] = baseUrl,
+            ["WEBTERMINAL_PROVIDER_API_KEY"] = apiKey
+        }
+    };
+
+    private static object BuildHookBridgeConfig(ProviderSession session, string internalEventEndpoint, bool hookBridgeEnabled) => new
+    {
+        enabled = hookBridgeEnabled,
+        endpoint = internalEventEndpoint,
+        providerSessionId = session.SessionId,
+        scriptPath = "tools/agent-runtime/agy_hook_bridge.py",
+        environment = new Dictionary<string, string>
+        {
+            ["WEBTERMINAL_AGENT_EVENT_ENDPOINT"] = internalEventEndpoint,
+            ["WEBTERMINAL_PROVIDER_SESSION_ID"] = session.SessionId.ToString(),
+            ["WEBTERMINAL_AGENT_EVENT_SECRET"] = "<configured server secret>"
         },
-        hookBridge = new
+        command = $"python tools/agent-runtime/agy_hook_bridge.py --endpoint {internalEventEndpoint} --provider-session-id {session.SessionId} --secret <configured server secret>"
+    };
+
+    private static object BuildConnectionManifest(
+        ProviderSession session,
+        string baseUrl,
+        string internalEventEndpoint,
+        bool hookBridgeEnabled,
+        string apiKey) => new
+    {
+        version = "webterminal-agent-provider.v1",
+        sessionId = session.SessionId,
+        displayName = session.DisplayName,
+        model = "agy",
+        baseUrl,
+        expiresAt = session.ExpiresAt,
+        openAi = BuildHarnessConfig(baseUrl, apiKey),
+        hookBridge = BuildHookBridgeConfig(session, internalEventEndpoint, hookBridgeEnabled),
+        smokeTest = new
         {
-            enabled = hookBridgeEnabled,
-            endpoint = GetInternalEventEndpoint(origin),
-            providerSessionId = session.SessionId,
-            scriptPath = "tools/agent-runtime/agy_hook_bridge.py",
-            environment = new
-            {
-                WEBTERMINAL_AGENT_EVENT_ENDPOINT = GetInternalEventEndpoint(origin),
-                WEBTERMINAL_PROVIDER_SESSION_ID = session.SessionId.ToString(),
-                WEBTERMINAL_AGENT_EVENT_SECRET = "<configured server secret>"
-            }
+            scriptPath = "tools/agent-runtime/provider_harness_smoke.py",
+            command = $"python tools/agent-runtime/provider_harness_smoke.py --base-url {baseUrl} --api-key {apiKey}"
         }
     };
 }
