@@ -106,7 +106,15 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            await process.WaitForExitAsync(cancellationToken);
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                KillProcess(process);
+                throw;
+            }
             session.AgyProcessId = null;
 
             var output = stdout.ToString().Trim();
@@ -130,6 +138,7 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
         }
         catch (OperationCanceledException)
         {
+            session.AgyProcessId = null;
             session.State = ProviderSessionState.Failed;
             session.FailureReason = "AGY completion was cancelled.";
             session.UpdatedAt = DateTimeOffset.UtcNow;
@@ -173,6 +182,21 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Failed to parse AGY log for provider session {SessionId}", session.SessionId);
+        }
+    }
+
+    private void KillProcess(Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to kill cancelled AGY process.");
         }
     }
 }

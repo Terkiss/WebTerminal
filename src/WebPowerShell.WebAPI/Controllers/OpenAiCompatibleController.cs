@@ -15,21 +15,26 @@ namespace WebPowerShell.WebAPI.Controllers;
 [EnableRateLimiting("ProviderApiLimiter")]
 public sealed class OpenAiCompatibleController : ControllerBase
 {
+    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(150);
+
     private readonly ProviderSessionRegistry _registry;
     private readonly IAgyRuntimeManager _runtimeManager;
     private readonly IAuditLogRepository _auditLogRepository;
     private readonly TranscriptResponseExtractor _transcriptResponseExtractor;
+    private readonly TimeSpan _requestTimeout;
 
     public OpenAiCompatibleController(
         ProviderSessionRegistry registry,
         IAgyRuntimeManager runtimeManager,
         IAuditLogRepository auditLogRepository,
-        TranscriptResponseExtractor transcriptResponseExtractor)
+        TranscriptResponseExtractor transcriptResponseExtractor,
+        IConfiguration configuration)
     {
         _registry = registry;
         _runtimeManager = runtimeManager;
         _auditLogRepository = auditLogRepository;
         _transcriptResponseExtractor = transcriptResponseExtractor;
+        _requestTimeout = GetRequestTimeout(configuration);
     }
 
     [HttpGet("models")]
@@ -124,7 +129,10 @@ public sealed class OpenAiCompatibleController : ControllerBase
                 return Conflict(new { error = new { message = "Duplicate Idempotency-Key for this provider session.", type = "duplicate_request" } });
             }
 
-            var completion = await _runtimeManager.CompleteAsync(session, userPrompt, cancellationToken);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_requestTimeout);
+
+            var completion = await _runtimeManager.CompleteAsync(session, userPrompt, timeoutCts.Token);
             if (!completion.IsSuccess)
             {
                 await WriteAuditAsync(session, "agent.provider.chat", "Failed", completion.ErrorMessage, cancellationToken);
@@ -156,7 +164,7 @@ public sealed class OpenAiCompatibleController : ControllerBase
 
             if (request.Stream)
             {
-                await WriteStreamingCompletionAsync(parsed, now, cancellationToken);
+                await WriteStreamingCompletionAsync(parsed, now, timeoutCts.Token);
                 return new EmptyResult();
             }
 
@@ -185,10 +193,34 @@ public sealed class OpenAiCompatibleController : ControllerBase
 
             return Ok(response);
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            await WriteAuditAsync(session, "agent.provider.chat", "Failed", "Timeout", CancellationToken.None);
+            return StatusCode(StatusCodes.Status504GatewayTimeout, new
+            {
+                error = new
+                {
+                    message = "AGY completion timed out.",
+                    type = "provider_timeout"
+                }
+            });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await WriteAuditAsync(session, "agent.provider.chat", "Cancelled", "ClientDisconnected", CancellationToken.None);
+            return new EmptyResult();
+        }
         finally
         {
             session.RequestLock.Release();
         }
+    }
+
+    private static TimeSpan GetRequestTimeout(IConfiguration configuration)
+    {
+        return int.TryParse(configuration["AgentRuntime:RequestTimeoutSeconds"], out var seconds) && seconds > 0
+            ? TimeSpan.FromSeconds(seconds)
+            : DefaultRequestTimeout;
     }
 
     private ProviderSession? AuthenticateProviderSession()

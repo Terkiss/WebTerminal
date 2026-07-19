@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -542,6 +543,63 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task ChatCompletion_ReturnsGatewayTimeoutWhenRuntimeTimesOut()
+    {
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureAppConfiguration((_, configurationBuilder) =>
+            {
+                configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["AgentRuntime:RequestTimeoutSeconds"] = "1"
+                });
+            });
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SlowRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-timeout-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-timeout-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Timeout Provider"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var chatRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "wait" } }
+            })
+        };
+        chatRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var chatResponse = await client.SendAsync(chatRequest);
+
+        Assert.Equal(HttpStatusCode.GatewayTimeout, chatResponse.StatusCode);
+        var body = await ReadJsonAsync(chatResponse);
+        Assert.Equal(
+            "provider_timeout",
+            body.RootElement.GetProperty("error").GetProperty("type").GetString());
+    }
+
+    [Fact]
     public void ParseAgyChatOutput_ConvertsToolCallJsonToOpenAiToolCalls()
     {
         const string output = """
@@ -696,6 +754,27 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         {
             CallCount++;
             return Task.FromResult(AgyCompletionResult.Success("counted"));
+        }
+    }
+
+    private sealed class SlowRuntimeManager : IAgyRuntimeManager
+    {
+        public Task<ProviderSessionState> PrepareSessionAsync(
+            ProviderSession session,
+            CancellationToken cancellationToken = default)
+        {
+            session.State = ProviderSessionState.Ready;
+            return Task.FromResult(session.State);
+        }
+
+        public async Task<AgyCompletionResult> CompleteAsync(
+            ProviderSession session,
+            string prompt,
+            CancellationToken cancellationToken = default)
+        {
+            session.State = ProviderSessionState.Generating;
+            await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken);
+            return AgyCompletionResult.Success("too late");
         }
     }
 }
