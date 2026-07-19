@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -18,6 +19,8 @@ def main() -> int:
     parser.add_argument("--api-key", default=os.environ.get("WEBTERMINAL_PROVIDER_API_KEY"))
     parser.add_argument("--workspace", default=os.getcwd())
     parser.add_argument("--prompt", default="Use the read_text_file tool to read README.md, then summarize it in one sentence.")
+    parser.add_argument("--stream", action="store_true", help="Use SSE streaming for the first provider request.")
+    parser.add_argument("--strict-tools", action="store_true", help="Fail if the first response does not request a tool.")
     args = parser.parse_args()
 
     if not args.api_key:
@@ -47,10 +50,19 @@ def main() -> int:
         }
     ]
 
-    first = client.post("/chat/completions", {"model": "agy", "messages": messages, "tools": tools})
+    first_payload = {"model": "agy", "messages": messages, "tools": tools, "stream": args.stream}
+    first = client.post(
+        "/chat/completions",
+        first_payload,
+        idempotency_key=f"provider-smoke-first-{uuid.uuid4().hex}",
+        stream=args.stream,
+    )
     choice = first["choices"][0]
     tool_calls = choice["message"].get("tool_calls") or []
     if not tool_calls:
+        if args.strict_tools:
+            print("Provider returned no tool calls in strict tool mode", file=sys.stderr)
+            return 1
         print(choice["message"].get("content", ""))
         return 0
 
@@ -66,7 +78,12 @@ def main() -> int:
             }
         )
 
-    final = client.post("/chat/completions", {"model": "agy", "messages": messages})
+    final = client.post(
+        "/chat/completions",
+        {"model": "agy", "messages": messages},
+        idempotency_key=f"provider-smoke-final-{uuid.uuid4().hex}",
+    )
+    validate_completion(final)
     print(final["choices"][0]["message"].get("content", ""))
     return 0
 
@@ -107,27 +124,71 @@ class ProviderClient:
     def get(self, path: str) -> dict:
         return self._request("GET", path)
 
-    def post(self, path: str, payload: dict) -> dict:
-        return self._request("POST", path, payload)
+    def post(self, path: str, payload: dict, idempotency_key: str | None = None, stream: bool = False) -> dict:
+        return self._request("POST", path, payload, idempotency_key=idempotency_key, stream=stream)
 
-    def _request(self, method: str, path: str, payload: dict | None = None) -> dict:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict | None = None,
+        idempotency_key: str | None = None,
+        stream: bool = False,
+    ) -> dict:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+
         request = urllib.request.Request(
             self.base_url + path,
             data=data,
             method=method,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
 
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
-                return json.loads(response.read().decode("utf-8"))
+                body = response.read().decode("utf-8")
+                return parse_sse_completion(body) if stream else json.loads(body)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
+
+
+def parse_sse_completion(body: str) -> dict:
+    message: dict = {"role": "assistant"}
+    finish_reason = None
+    for line in body.splitlines():
+        if not line.startswith("data:"):
+            continue
+
+        data = line[5:].strip()
+        if data == "[DONE]":
+            continue
+
+        event = json.loads(data)
+        choice = (event.get("choices") or [{}])[0]
+        delta = choice.get("delta") or {}
+        finish_reason = choice.get("finish_reason") or finish_reason
+        if "content" in delta:
+            message["content"] = (message.get("content") or "") + (delta.get("content") or "")
+        if "tool_calls" in delta:
+            message["tool_calls"] = delta["tool_calls"]
+
+    return {"choices": [{"message": message, "finish_reason": finish_reason}]}
+
+
+def validate_completion(completion: dict) -> None:
+    choices = completion.get("choices") or []
+    if not choices:
+        raise RuntimeError("Provider response did not include choices")
+    message = choices[0].get("message") or {}
+    if not isinstance(message, dict):
+        raise RuntimeError("Provider response choice did not include a message object")
 
 
 if __name__ == "__main__":
