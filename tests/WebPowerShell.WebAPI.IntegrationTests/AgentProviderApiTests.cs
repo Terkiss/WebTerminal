@@ -400,6 +400,76 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task ChatCompletion_ExtractsNestedTranscriptContentParts()
+    {
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, EmptyOutputRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-nested-transcript-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-nested-transcript-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Nested Transcript Provider"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        var sessionId = created.RootElement.GetProperty("sessionId").GetString();
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        var transcriptPath = Path.Combine(Path.GetTempPath(), $"webterminal-transcript-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllTextAsync(transcriptPath, """{"message":{"role":"user","content":"first"}}""" + Environment.NewLine);
+        var eventBody = JsonSerializer.Serialize(new
+        {
+            eventId = "evt-nested-transcript",
+            eventType = "conversation.started",
+            providerSessionId = sessionId,
+            conversationId = "97039a03-3777-4acd-810e-28c90013976d",
+            stepIdx = 1,
+            transcriptPath,
+            timestamp = DateTimeOffset.UtcNow
+        });
+        using var eventRequest = BuildSignedInternalEventRequest(eventBody, "nonce-nested-transcript", _factory.TimeProvider.GetUtcNow());
+        var eventResponse = await client.SendAsync(eventRequest);
+        Assert.Equal(HttpStatusCode.OK, eventResponse.StatusCode);
+
+        await File.AppendAllTextAsync(
+            transcriptPath,
+            """{"message":{"role":"assistant","content":[{"type":"text","text":"nested"},{"type":"text","text":"answer"}]}}""" + Environment.NewLine);
+        using var chatRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "reply" } }
+            })
+        };
+        chatRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var chatResponse = await client.SendAsync(chatRequest);
+
+        Assert.Equal(HttpStatusCode.OK, chatResponse.StatusCode);
+        var chat = await ReadJsonAsync(chatResponse);
+        Assert.Equal(
+            $"nested{Environment.NewLine}answer",
+            chat.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString());
+    }
+
+    [Fact]
     public async Task ChatCompletion_AcceptsToolResultWhenWaitingForToolResult()
     {
         SequencedRuntimeManager.LastPrompt = null;
@@ -811,6 +881,26 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
 
         Assert.Equal("plain answer", parsed.Content);
         Assert.Empty(parsed.ToolCalls);
+    }
+
+    [Fact]
+    public async Task TranscriptDeltaReader_ExtractsNestedToolCalls()
+    {
+        var transcriptPath = Path.Combine(Path.GetTempPath(), $"webterminal-transcript-{Guid.NewGuid():N}.jsonl");
+        await File.WriteAllTextAsync(
+            transcriptPath,
+            """{"message":{"role":"assistant","tool_calls":[{"id":"call_nested","type":"function","function":{"name":"read_text_file","arguments":"{}"}}]}}""" + Environment.NewLine);
+        var session = new ProviderSession
+        {
+            LastTranscriptPath = transcriptPath
+        };
+        var reader = new TranscriptDeltaReader();
+
+        var delta = await reader.ReadDeltaAsync(session);
+
+        var entry = Assert.Single(delta.Entries);
+        Assert.Equal("assistant", entry.Role);
+        Assert.Contains("call_nested", entry.Content);
     }
 
     private async Task SeedUserAsync(string username, string plaintextPassword, bool isAdmin)
