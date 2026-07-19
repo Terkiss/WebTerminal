@@ -159,6 +159,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${new Date(provider.expiresAt).toLocaleString()}</td>
                 <td>
                     <button class="btn-secondary" onclick="showProviderConfig('${provider.sessionId}')">Config</button>
+                    <button class="btn-secondary" onclick="regenerateProviderApiKey('${provider.sessionId}')">Regenerate API Key</button>
                     <button class="btn-danger" onclick="revokeProvider('${provider.sessionId}')">Revoke</button>
                 </td>
             `;
@@ -194,9 +195,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
 
-    const showProviderKey = (created) => {
+    const showProviderKey = (created, title = 'API Key issued') => {
         const card = document.getElementById('provider-key-card');
         const key = document.getElementById('provider-api-key');
+        const keyTitle = document.getElementById('provider-key-title');
+        const help = document.getElementById('provider-key-help');
+        keyTitle.textContent = title;
+        help.textContent = created.message || 'Copy it now. This key will not be shown again after you leave this page.';
         key.textContent = formatProviderManifest(created.connectionManifest || created);
         card.classList.remove('hidden');
     };
@@ -208,12 +213,47 @@ document.addEventListener('DOMContentLoaded', () => {
             const provider = await res.json();
             const card = document.getElementById('provider-key-card');
             const key = document.getElementById('provider-api-key');
+            const keyTitle = document.getElementById('provider-key-title');
+            const help = document.getElementById('provider-key-help');
+            keyTitle.textContent = 'Provider config';
+            help.textContent = 'The existing API key value cannot be shown again. Regenerate the key if you need a new one.';
             key.textContent = formatProviderManifest(provider.connectionManifest || provider);
             card.classList.remove('hidden');
         } catch (e) {
             alert('Failed to load provider config');
         }
     };
+
+    window.regenerateProviderApiKey = async (id) => {
+        if (!confirm('Regenerate this provider API key? The previous key will stop working immediately.')) return;
+        try {
+            const res = await fetch(`/api/agent/provider-sessions/${id}/api-key/regenerate`, { method: 'POST' });
+            if (!res.ok) throw res;
+            const regenerated = await res.json();
+            showProviderKey(regenerated, 'New API key generated');
+            await fetchProviders();
+        } catch (e) {
+            alert('Failed to regenerate provider API key');
+        }
+    };
+
+    const copyProviderKey = async () => {
+        const key = document.getElementById('provider-api-key');
+        if (!key || !key.textContent) return;
+        try {
+            await navigator.clipboard.writeText(key.textContent);
+        } catch {
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(key);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.execCommand('copy');
+            selection.removeAllRanges();
+        }
+    };
+
+    document.getElementById('btn-copy-provider-key')?.addEventListener('click', copyProviderKey);
 
     window.revokeProvider = async (id) => {
         if (!confirm('Revoke this provider API key and stop the session?')) return;

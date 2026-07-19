@@ -20,7 +20,7 @@ public sealed class ProviderSession
     public string? LastTranscriptPath { get; set; }
     public long TranscriptOffset { get; set; }
     public List<AgentRuntimeEvent> RecentEvents { get; } = [];
-    public string ApiKeyHash { get; init; } = string.Empty;
+    public string ApiKeyHash { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset ExpiresAt { get; init; } = DateTimeOffset.UtcNow.AddHours(8);

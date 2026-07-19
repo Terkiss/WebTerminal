@@ -166,6 +166,23 @@ public sealed class ProviderSessionRegistry
         return true;
     }
 
+    public RegenerateProviderApiKeyResult? RegenerateApiKey(Guid ownerUserId, Guid sessionId)
+    {
+        var session = GetByIdForUser(ownerUserId, sessionId);
+        if (session == null || session.State == ProviderSessionState.Stopped)
+        {
+            return null;
+        }
+
+        var apiKey = GenerateApiKey();
+        session.ApiKeyHash = ProviderSession.HashApiKey(apiKey);
+        session.UpdatedAt = _timeProvider.GetUtcNow();
+        _sessionStore.Save(session);
+
+        _logger.LogInformation("Regenerated provider API key for session {SessionId} and user {UserId}", sessionId, ownerUserId);
+        return new RegenerateProviderApiKeyResult(session, apiKey);
+    }
+
     public AgentRuntimeEventResult ApplyEvent(AgentRuntimeEvent runtimeEvent)
     {
         if (!_seenEventIds.TryAdd(runtimeEvent.EventId, 0))
@@ -293,6 +310,10 @@ public sealed record CreateProviderSessionResult(
     ProviderSession Session,
     string PlaintextApiKey,
     AgyRuntimeProbeResult RuntimeProbe);
+
+public sealed record RegenerateProviderApiKeyResult(
+    ProviderSession Session,
+    string PlaintextApiKey);
 
 public enum AgentRuntimeEventResult
 {

@@ -132,9 +132,12 @@
                             </div>
                             <div id="provider-key-card" class="provider-key-card hidden">
                                 <div>
-                                    <strong>API Key issued</strong>
-                                    <p>This key is shown once. Store it in the external harness now.</p>
+                                    <strong id="provider-key-title">API Key issued</strong>
+                                    <p id="provider-key-help">This key is shown once. Store it in the external harness now.</p>
                                 </div>
+                                <button class="btn-secondary" id="btn-copy-provider-key">
+                                    <i class="fa-solid fa-copy"></i> Copy
+                                </button>
                                 <code id="provider-api-key"></code>
                             </div>
                             <div class="table-responsive">

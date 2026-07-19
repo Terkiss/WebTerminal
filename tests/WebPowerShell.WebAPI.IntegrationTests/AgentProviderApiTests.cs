@@ -148,6 +148,75 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task ProviderSession_RegeneratesApiKeyAndRevokesPreviousKey()
+    {
+        var client = _factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync("provider-key-regen-admin", password, isAdmin: true);
+
+        var loginResponse = await LoginAsync(client, "provider-key-regen-admin", password);
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Regenerate Provider Key"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        var sessionId = created.RootElement.GetProperty("sessionId").GetString();
+        var firstApiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        var regenerateResponse = await client.PostAsync(
+            $"/api/agent/provider-sessions/{sessionId}/api-key/regenerate",
+            content: null);
+        Assert.Equal(HttpStatusCode.OK, regenerateResponse.StatusCode);
+
+        var regenerated = await ReadJsonAsync(regenerateResponse);
+        var secondApiKey = regenerated.RootElement.GetProperty("apiKey").GetString();
+        Assert.StartsWith("wta_", secondApiKey);
+        Assert.NotEqual(firstApiKey, secondApiKey);
+        Assert.True(regenerated.RootElement.GetProperty("oneTimeDisplay").GetBoolean());
+        Assert.Equal(
+            secondApiKey,
+            regenerated.RootElement
+                .GetProperty("connectionManifest")
+                .GetProperty("openAi")
+                .GetProperty("environment")
+                .GetProperty("OPENAI_API_KEY")
+                .GetString());
+
+        using var oldKeyRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        oldKeyRequest.Headers.Authorization = new("Bearer", firstApiKey);
+        var oldKeyResponse = await client.SendAsync(oldKeyRequest);
+        Assert.Equal(HttpStatusCode.Unauthorized, oldKeyResponse.StatusCode);
+
+        using var newKeyRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        newKeyRequest.Headers.Authorization = new("Bearer", secondApiKey);
+        var newKeyResponse = await client.SendAsync(newKeyRequest);
+        Assert.Equal(HttpStatusCode.OK, newKeyResponse.StatusCode);
+
+        var detailResponse = await client.GetAsync($"/api/agent/provider-sessions/{sessionId}");
+        Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
+        var detail = await ReadJsonAsync(detailResponse);
+        Assert.False(detail.RootElement.TryGetProperty("apiKey", out _));
+        Assert.Equal(
+            "<apiKey>",
+            detail.RootElement
+                .GetProperty("connectionManifest")
+                .GetProperty("openAi")
+                .GetProperty("environment")
+                .GetProperty("OPENAI_API_KEY")
+                .GetString());
+
+        var auditLogs = await _factory.GetAuditLogsAsync();
+        Assert.Contains(auditLogs, log =>
+            log.Command == "agent.provider.session.api_key.regenerate" &&
+            log.SessionId == sessionId &&
+            log.ResultStatus == "Success");
+    }
+
+    [Fact]
     public async Task ProviderSessionConfig_ShowsDisabledHookBridgeWhenSecretIsMissing()
     {
         var factory = _factory.WithWebHostBuilder(builder =>

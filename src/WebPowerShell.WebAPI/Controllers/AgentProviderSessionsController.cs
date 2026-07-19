@@ -112,6 +112,41 @@ public sealed class AgentProviderSessionsController : ControllerBase
         return Ok(new { success = true });
     }
 
+    [HttpPost("{sessionId:guid}/api-key/regenerate")]
+    public async Task<IActionResult> RegenerateApiKey(Guid sessionId, CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var ownerUserId))
+        {
+            return Unauthorized();
+        }
+
+        var result = _registry.RegenerateApiKey(ownerUserId, sessionId);
+        if (result == null)
+        {
+            return NotFound();
+        }
+
+        await WriteAuditAsync(ownerUserId, "agent.provider.session.api_key.regenerate", result.Session, "Success", cancellationToken);
+
+        var origin = GetOrigin();
+        var baseUrl = GetProviderBaseUrl(origin);
+        var internalEventEndpoint = GetInternalEventEndpoint(origin);
+        return Ok(new
+        {
+            sessionId = result.Session.SessionId,
+            state = result.Session.State.ToString(),
+            baseUrl,
+            model = "agy",
+            apiKey = result.PlaintextApiKey,
+            apiKeyGeneratedAt = result.Session.UpdatedAt,
+            oneTimeDisplay = true,
+            message = "Store this key now. It will not be shown again after you leave this page.",
+            harness = BuildHarnessConfig(baseUrl, result.PlaintextApiKey),
+            connectionManifest = BuildConnectionManifest(result.Session, baseUrl, internalEventEndpoint, IsHookBridgeEnabled(), result.PlaintextApiKey),
+            expiresAt = result.Session.ExpiresAt
+        });
+    }
+
     private bool TryGetUserId(out Guid userId)
     {
         var value = User.FindFirstValue(ClaimTypes.NameIdentifier);
