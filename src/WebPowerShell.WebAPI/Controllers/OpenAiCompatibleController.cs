@@ -100,6 +100,19 @@ public sealed class OpenAiCompatibleController : ControllerBase
         }
 
         var isToolResultRequest = IsToolResultRequest(request);
+        if (!CanAcceptRequest(session.State, isToolResultRequest))
+        {
+            await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "ProviderNotReady", cancellationToken);
+            return Conflict(new
+            {
+                error = new
+                {
+                    message = $"Provider session is not ready. Current state: {session.State}.",
+                    type = "provider_not_ready"
+                }
+            });
+        }
+
         if (session.State == ProviderSessionState.Generating ||
             (session.State == ProviderSessionState.WaitingForToolResult && !isToolResultRequest))
         {
@@ -283,6 +296,16 @@ public sealed class OpenAiCompatibleController : ControllerBase
     {
         return request.Messages.LastOrDefault() is { } lastMessage &&
             string.Equals(lastMessage.Role, "tool", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool CanAcceptRequest(ProviderSessionState state, bool isToolResultRequest)
+    {
+        return state switch
+        {
+            ProviderSessionState.Ready or ProviderSessionState.WaitingForRequest => true,
+            ProviderSessionState.WaitingForToolResult => isToolResultRequest,
+            _ => false
+        };
     }
 
     private static string? BuildAgyPrompt(ChatCompletionRequest request)

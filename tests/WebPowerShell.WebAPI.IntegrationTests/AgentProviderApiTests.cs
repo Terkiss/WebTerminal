@@ -700,6 +700,58 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task ChatCompletion_RejectsRequestsBeforeProviderIsReady()
+    {
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, StartingRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-starting-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-starting-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Starting Provider"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+        Assert.Equal("Starting", created.RootElement.GetProperty("state").GetString());
+
+        using var chatRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "too soon" } }
+            })
+        };
+        chatRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var chatResponse = await client.SendAsync(chatRequest);
+
+        Assert.Equal(HttpStatusCode.Conflict, chatResponse.StatusCode);
+        var body = await ReadJsonAsync(chatResponse);
+        Assert.Equal(
+            "provider_not_ready",
+            body.RootElement.GetProperty("error").GetProperty("type").GetString());
+        Assert.Equal(0, StartingRuntimeManager.CallCount);
+    }
+
+    [Fact]
     public void ParseAgyChatOutput_ConvertsToolCallJsonToOpenAiToolCalls()
     {
         const string output = """
@@ -875,6 +927,29 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
             session.State = ProviderSessionState.Generating;
             await Task.Delay(TimeSpan.FromMinutes(1), cancellationToken);
             return AgyCompletionResult.Success("too late");
+        }
+    }
+
+    private sealed class StartingRuntimeManager : IAgyRuntimeManager
+    {
+        public static int CallCount { get; set; }
+
+        public Task<ProviderSessionState> PrepareSessionAsync(
+            ProviderSession session,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount = 0;
+            session.State = ProviderSessionState.Starting;
+            return Task.FromResult(session.State);
+        }
+
+        public Task<AgyCompletionResult> CompleteAsync(
+            ProviderSession session,
+            string prompt,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return Task.FromResult(AgyCompletionResult.Success("should not run"));
         }
     }
 }
