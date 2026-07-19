@@ -4,6 +4,7 @@
 대상 독자: 외부 Agent Harness 개발자, WebTerminal 운영자
 모델 ID: `agy`
 Base path: `/v1`
+기본 공개 주소: `http://gpt.dotge.net:5255/v1`
 
 ## 요약
 
@@ -15,6 +16,8 @@ WebTerminal은 하나의 AGY Provider Session을 OpenAI 호환 모델 제공자�
 - 외부 하네스가 자기 컴퓨터와 자기 workspace에서 tool을 실행한다.
 - WebTerminal은 AGY 입력, 응답 변환, tool call/result 매핑, session 상태 관리를 담당한다.
 - API Key는 생성 또는 재생성 응답에서만 평문으로 표시된다.
+
+현재 WebTerminal의 기본 HTTP 포트는 `5255`다. 따라서 외부 하네스의 기본 `OPENAI_BASE_URL`은 `http://gpt.dotge.net:5255/v1`이다. 만약 운영 환경에서 443/HTTPS reverse proxy를 앞단에 붙이면 해당 proxy 주소, 예를 들어 `https://gpt.dotge.net/v1`, 를 사용하면 된다.
 
 ```mermaid
 sequenceDiagram
@@ -61,25 +64,25 @@ Cookie: <admin session>
 {
   "sessionId": "00000000-0000-0000-0000-000000000000",
   "state": "Ready",
-  "baseUrl": "https://host.example/v1",
+  "baseUrl": "http://gpt.dotge.net:5255/v1",
   "model": "agy",
   "apiKey": "wta_...",
   "harness": {
-    "baseUrl": "https://host.example/v1",
+    "baseUrl": "http://gpt.dotge.net:5255/v1",
     "model": "agy",
     "authorization": "Bearer wta_...",
     "environment": {
-      "OPENAI_BASE_URL": "https://host.example/v1",
+      "OPENAI_BASE_URL": "http://gpt.dotge.net:5255/v1",
       "OPENAI_API_KEY": "wta_...",
       "OPENAI_MODEL": "agy",
-      "WEBTERMINAL_PROVIDER_BASE_URL": "https://host.example/v1",
+      "WEBTERMINAL_PROVIDER_BASE_URL": "http://gpt.dotge.net:5255/v1",
       "WEBTERMINAL_PROVIDER_API_KEY": "wta_..."
     }
   },
   "connectionManifest": {
     "version": "webterminal-agent-provider.v1",
     "model": "agy",
-    "baseUrl": "https://host.example/v1"
+    "baseUrl": "http://gpt.dotge.net:5255/v1"
   },
   "expiresAt": "2026-07-20T12:00:00+00:00"
 }
@@ -103,7 +106,7 @@ Session 상세 조회와 목록 조회는 기존 평문 키를 다시 반환하�
 외부 하네스는 Provider Session 생성 또는 키 재생성 응답의 값을 사용한다.
 
 ```powershell
-$env:OPENAI_BASE_URL = "https://host.example/v1"
+$env:OPENAI_BASE_URL = "http://gpt.dotge.net:5255/v1"
 $env:OPENAI_API_KEY = "wta_..."
 $env:OPENAI_MODEL = "agy"
 ```
@@ -111,7 +114,7 @@ $env:OPENAI_MODEL = "agy"
 WebTerminal 전용 이름을 쓰는 클라이언트라면 아래 값도 사용할 수 있다.
 
 ```powershell
-$env:WEBTERMINAL_PROVIDER_BASE_URL = "https://host.example/v1"
+$env:WEBTERMINAL_PROVIDER_BASE_URL = "http://gpt.dotge.net:5255/v1"
 $env:WEBTERMINAL_PROVIDER_API_KEY = "wta_..."
 ```
 
