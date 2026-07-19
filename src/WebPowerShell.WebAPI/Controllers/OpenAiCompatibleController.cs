@@ -471,7 +471,7 @@ Tools:
                     new
                     {
                         index = 0,
-                        delta = new { tool_calls = parsed.ToolCalls },
+                        delta = new { tool_calls = ToStreamingToolCalls(parsed.ToolCalls) },
                         finish_reason = (string?)null
                     }
                 }
@@ -516,6 +516,24 @@ Tools:
 
         await Response.WriteAsync("data: [DONE]\n\n", cancellationToken);
         await Response.Body.FlushAsync(cancellationToken);
+    }
+
+    private static IReadOnlyList<object> ToStreamingToolCalls(IReadOnlyList<OpenAiToolCall> toolCalls)
+    {
+        return toolCalls
+            .Select((toolCall, index) => new
+            {
+                index,
+                id = toolCall.Id,
+                type = toolCall.Type,
+                function = new
+                {
+                    name = toolCall.Function.Name,
+                    arguments = toolCall.Function.Arguments
+                }
+            })
+            .Cast<object>()
+            .ToList();
     }
 
     private async Task WriteSseAsync(object payload, CancellationToken cancellationToken)

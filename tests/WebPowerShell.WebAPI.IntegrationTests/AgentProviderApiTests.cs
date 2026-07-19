@@ -436,6 +436,61 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task ChatCompletion_StreamsToolCallsWithOpenAiDeltaShape()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("""{"tool_calls":[{"id":"call_stream","type":"function","function":{"name":"read_text_file","arguments":{"path":"README.md"}}}]}""");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-stream-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-stream-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Stream Provider"
+        });
+        Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var streamRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "stream tool" } },
+                stream = true,
+                tools = new[] { new { type = "function", function = new { name = "read_text_file" } } }
+            })
+        };
+        streamRequest.Headers.Authorization = new("Bearer", apiKey);
+
+        var streamResponse = await client.SendAsync(streamRequest);
+
+        Assert.Equal(HttpStatusCode.OK, streamResponse.StatusCode);
+        Assert.Equal("text/event-stream", streamResponse.Content.Headers.ContentType?.MediaType);
+        var sse = await streamResponse.Content.ReadAsStringAsync();
+        Assert.Contains("data: [DONE]", sse);
+        Assert.Contains(@"""finish_reason"":""tool_calls""", sse);
+        Assert.Contains(@"""tool_calls"":[{""index"":0,""id"":""call_stream""", sse);
+    }
+
+    [Fact]
     public async Task ChatCompletion_AcceptsOpenAiContentParts()
     {
         SequencedRuntimeManager.LastPrompt = null;
