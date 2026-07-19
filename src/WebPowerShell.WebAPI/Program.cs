@@ -455,24 +455,40 @@ app.MapGet("/api/weatherforecast", () =>
 .RequireAuthorization();
 
 
-// Seed terukiss admin into TeruTeruPandas DataFrame
+// Seed/bootstrap the local admin account. Existing accounts are reset only
+// when AdminBootstrap:ResetExisting is explicitly enabled.
 {
     var userRepo = app.Services.GetRequiredService<IUserRepository>();
     var hasher = app.Services.GetRequiredService<IPasswordHasher>();
-    var existing = await userRepo.GetByUsernameAsync("terukiss");
+    var bootstrapUsername = app.Configuration["AdminBootstrap:Username"] ?? "terukiss";
+    var bootstrapPassword = app.Configuration["AdminBootstrap:Password"] ?? "dbslwms@skshgk1";
+    var resetExisting = bool.TryParse(app.Configuration["AdminBootstrap:ResetExisting"], out var shouldReset) && shouldReset;
+    var existing = await userRepo.GetByUsernameAsync(bootstrapUsername);
     if (!existing.IsSuccess)
     {
         await userRepo.SaveAsync(new WebPowerShell.Domain.Entities.User
         {
             Id = Guid.Parse("a0a0a0a0-b1b1-c2c2-d3d3-e4e4e4e4e4e4"),
-            Username = "terukiss",
-            PasswordHash = hasher.HashPassword("dbslwms@skshgk1"),
+            Username = bootstrapUsername,
+            PasswordHash = hasher.HashPassword(bootstrapPassword),
             LastPasswordChangeDate = DateTimeOffset.UtcNow,
             IsActive = true,
             IsAdmin = true,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow
         });
+    }
+    else if (resetExisting && !string.IsNullOrWhiteSpace(bootstrapPassword))
+    {
+        var admin = existing.Value!;
+        admin.PasswordHash = hasher.HashPassword(bootstrapPassword);
+        admin.LastPasswordChangeDate = DateTimeOffset.UtcNow;
+        admin.IsActive = true;
+        admin.IsAdmin = true;
+        admin.FailedLoginCount = 0;
+        admin.LockedUntil = null;
+        admin.UpdatedAt = DateTimeOffset.UtcNow;
+        await userRepo.SaveAsync(admin);
     }
 }
 

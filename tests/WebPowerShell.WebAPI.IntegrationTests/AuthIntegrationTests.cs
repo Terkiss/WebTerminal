@@ -4,6 +4,8 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using WebPowerShell.Application.Users.Commands.ChangePassword;
@@ -54,6 +56,34 @@ namespace WebPowerShell.WebAPI.IntegrationTests
             };
             request.Headers.Add("X-Forwarded-For", ip);
             return await client.SendAsync(request);
+        }
+
+        [Fact]
+        public async Task AdminBootstrap_ConfiguredAdminCanLogin()
+        {
+            var factory = _factory.WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureAppConfiguration((_, configurationBuilder) =>
+                {
+                    configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["AdminBootstrap:Username"] = "bootstrap-admin",
+                        ["AdminBootstrap:Password"] = "BootstrapPassword123!"
+                    });
+                });
+            });
+            var client = factory.CreateClient();
+
+            var response = await PostLoginAsync(client, "10.0.0.30", new LoginCommand
+            {
+                Username = "bootstrap-admin",
+                Password = "BootstrapPassword123!"
+            });
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            var loginResult = await response.Content.ReadFromJsonAsync<LoginResponseDto>();
+            Assert.NotNull(loginResult);
+            Assert.True(loginResult.IsAdmin);
         }
 
         [Fact]
