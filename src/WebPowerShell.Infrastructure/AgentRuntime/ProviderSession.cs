@@ -16,6 +16,8 @@ public sealed class ProviderSession
     public ProviderSessionState State { get; set; } = ProviderSessionState.Created;
     public string? ConversationId { get; set; }
     public int? AgyProcessId { get; set; }
+    public Guid? TerminalSessionId { get; set; }
+    public bool IsTerminalBacked { get; set; }
     public string? LastAgyLogPath { get; set; }
     public string? LastTranscriptPath { get; set; }
     public long TranscriptOffset { get; set; }

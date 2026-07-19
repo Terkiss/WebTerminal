@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using WebPowerShell.Infrastructure.ConPTY;
 
 namespace WebPowerShell.Infrastructure.AgentRuntime;
 
@@ -19,14 +20,17 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
     private readonly AgyRuntimeProbe _runtimeProbe;
     private readonly ILogger<AgyRuntimeManager> _logger;
     private readonly AgyRuntimeOptions _options;
+    private readonly ITerminalSessionManager _terminalSessionManager;
 
     public AgyRuntimeManager(
         AgyRuntimeProbe runtimeProbe,
         ILogger<AgyRuntimeManager> logger,
+        ITerminalSessionManager terminalSessionManager,
         IConfiguration configuration)
     {
         _runtimeProbe = runtimeProbe;
         _logger = logger;
+        _terminalSessionManager = terminalSessionManager;
         _options = LoadOptions(configuration);
     }
 
@@ -56,6 +60,11 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
         string prompt,
         CancellationToken cancellationToken = default)
     {
+        if (session.IsTerminalBacked && session.TerminalSessionId is { } terminalSessionId)
+        {
+            return await CompleteViaTerminalSessionAsync(session, terminalSessionId, prompt, cancellationToken);
+        }
+
         var probe = await _runtimeProbe.ProbeAsync(cancellationToken);
         if (!probe.IsAvailable || probe.ExecutablePath == null)
         {
@@ -148,6 +157,63 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "AGY completion failed for provider session {SessionId}", session.SessionId);
+            session.State = ProviderSessionState.Failed;
+            session.FailureReason = ex.Message;
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            return AgyCompletionResult.Fail(ex.Message);
+        }
+    }
+
+    private async Task<AgyCompletionResult> CompleteViaTerminalSessionAsync(
+        ProviderSession session,
+        Guid terminalSessionId,
+        string prompt,
+        CancellationToken cancellationToken)
+    {
+        var result = _terminalSessionManager.GetSession(terminalSessionId);
+        if (!result.IsSuccess)
+        {
+            session.State = ProviderSessionState.Failed;
+            session.FailureReason = "API provider terminal session is not available.";
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            return AgyCompletionResult.Fail(session.FailureReason);
+        }
+
+        var terminalSession = result.Value!;
+        if (terminalSession.OwnerUserId != session.OwnerUserId)
+        {
+            session.State = ProviderSessionState.Failed;
+            session.FailureReason = "API provider terminal session owner mismatch.";
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            return AgyCompletionResult.Fail(session.FailureReason);
+        }
+
+        session.State = ProviderSessionState.Generating;
+        session.UpdatedAt = DateTimeOffset.UtcNow;
+
+        try
+        {
+            var output = await terminalSession.SendApiPromptAndCaptureAsync(
+                prompt,
+                idleTimeout: TimeSpan.FromMilliseconds(900),
+                hardTimeout: TimeSpan.FromSeconds(150),
+                cancellationToken);
+
+            session.State = ProviderSessionState.WaitingForRequest;
+            session.FailureReason = null;
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            return AgyCompletionResult.Success(output);
+        }
+        catch (OperationCanceledException)
+        {
+            session.State = ProviderSessionState.Failed;
+            session.FailureReason = "API provider terminal completion was cancelled or timed out.";
+            session.UpdatedAt = DateTimeOffset.UtcNow;
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Terminal-backed AGY completion failed for provider session {SessionId}", session.SessionId);
             session.State = ProviderSessionState.Failed;
             session.FailureReason = ex.Message;
             session.UpdatedAt = DateTimeOffset.UtcNow;

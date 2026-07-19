@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR.Client;
@@ -34,13 +35,14 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
         _passwordHasher = new BCryptPasswordHasher(Substitute.For<ILogger<BCryptPasswordHasher>>());
     }
 
-    private async Task<User> SeedUserHelperAsync(string username, string plaintextPassword)
+    private async Task<User> SeedUserHelperAsync(string username, string plaintextPassword, bool isAdmin = false)
     {
         var user = new User
         {
             Id = Guid.NewGuid(),
             Username = username,
             PasswordHash = _passwordHasher.HashPassword(plaintextPassword),
+            IsAdmin = isAdmin,
             IsActive = true,
             CreatedAt = _factory.TimeProvider.GetUtcNow(),
             UpdatedAt = _factory.TimeProvider.GetUtcNow(),
@@ -74,9 +76,9 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
         }
     }
 
-    private async Task<HubConnection> CreateAuthenticatedConnectionAsync(string username, string password)
+    private async Task<HubConnection> CreateAuthenticatedConnectionAsync(string username, string password, bool isAdmin = false)
     {
-        await SeedUserHelperAsync(username, password);
+        await SeedUserHelperAsync(username, password, isAdmin);
 
         var loginCommand = new LoginCommand
         {
@@ -194,6 +196,50 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
         finally
         {
             await connectionA.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task ApiServerStart_AdminTerminal_ShouldCreateProviderModeSession()
+    {
+        var tabId = Guid.NewGuid();
+        var connection = await CreateAuthenticatedConnectionAsync("provider-terminal-admin", "CorrectPassword123!", isAdmin: true);
+        var output = new StringBuilder();
+        var outputReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        connection.On<Guid, byte[]>("TerminalOutput", (receivedTabId, chunk) =>
+        {
+            if (receivedTabId != tabId)
+            {
+                return;
+            }
+
+            var text = Encoding.UTF8.GetString(chunk);
+            output.Append(text);
+            if (output.ToString().Contains("OPENAI_API_KEY=wta_", StringComparison.Ordinal))
+            {
+                outputReceived.TrySetResult();
+            }
+        });
+
+        try
+        {
+            var openResult = await connection.InvokeAsync<HubResponse>("CreateSession", tabId);
+            Assert.True(openResult.Success, $"CreateSession failed: {openResult.ErrorCode}");
+
+            var command = Encoding.UTF8.GetBytes("apiServerStart\r");
+            var sendResult = await connection.InvokeAsync<HubResponse>("SendInput", tabId, Convert.ToBase64String(command));
+            Assert.True(sendResult.Success, $"SendInput failed: {sendResult.ErrorCode}");
+
+            await outputReceived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var renderedOutput = output.ToString();
+            Assert.Contains("API Provider Mode enabled", renderedOutput);
+            Assert.Contains("OPENAI_BASE_URL=http://localhost/v1", renderedOutput);
+            Assert.Contains("OPENAI_MODEL=agy", renderedOutput);
+        }
+        finally
+        {
+            await connection.StopAsync();
         }
     }
 }

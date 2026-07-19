@@ -1,12 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 using WebPowerShell.Domain.Common;
 using WebPowerShell.Infrastructure.ConPTY;
+using WebPowerShell.Infrastructure.AgentRuntime;
 using WebPowerShell.Infrastructure.Persistence;
 
 namespace WebPowerShell.WebAPI.Hubs;
@@ -18,17 +21,22 @@ public class TerminalHub : Hub
     private readonly ITerminalSessionManager _sessionManager;
     private readonly IHubContext<TerminalHub> _hubContext;
     private readonly MemoryPersistenceService _persistenceService;
+    private readonly ProviderSessionRegistry _providerSessionRegistry;
+    private static readonly ConcurrentDictionary<Guid, StringBuilder> ApiServerCommandBuffers = new();
+    private const string ApiServerStartCommand = "apiServerStart";
 
     public TerminalHub(
         ILogger<TerminalHub> logger,
         ITerminalSessionManager sessionManager,
         IHubContext<TerminalHub> hubContext,
-        MemoryPersistenceService persistenceService)
+        MemoryPersistenceService persistenceService,
+        ProviderSessionRegistry providerSessionRegistry)
     {
         _logger = logger;
         _sessionManager = sessionManager;
         _hubContext = hubContext;
         _persistenceService = persistenceService;
+        _providerSessionRegistry = providerSessionRegistry;
     }
 
     public override async Task OnConnectedAsync()
@@ -175,7 +183,11 @@ public class TerminalHub : Hub
         var session = result.Value!;
         if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
 
-        await session.SendInputAsync(input);
+        if (await TryHandleApiServerCommandAsync(userId, session, input))
+        {
+            return HubResponse.Ok();
+        }
+
         return HubResponse.Ok();
     }
 
@@ -212,6 +224,118 @@ public class TerminalHub : Hub
     private bool TryGetUserId(out Guid userId)
     {
         return Guid.TryParse(Context.UserIdentifier, out userId);
+    }
+
+    private async Task<bool> TryHandleApiServerCommandAsync(Guid userId, TerminalSession session, byte[] input)
+    {
+        var text = Encoding.UTF8.GetString(input);
+        if (string.IsNullOrEmpty(text))
+        {
+            await session.SendInputAsync(input);
+            return true;
+        }
+
+        var buffer = ApiServerCommandBuffers.GetOrAdd(session.SessionId, _ => new StringBuilder());
+        var pendingFlush = new StringBuilder();
+
+        foreach (var ch in text)
+        {
+            if (ch is '\r' or '\n')
+            {
+                var command = buffer.ToString();
+                buffer.Clear();
+
+                if (string.Equals(command, ApiServerStartCommand, StringComparison.Ordinal))
+                {
+                    if (!Context.User.IsInRole("Admin"))
+                    {
+                        await session.EmitSystemOutputAsync("\r\n[WebTerminal] apiServerStart requires an administrator account.\r\n");
+                        continue;
+                    }
+
+                    await StartApiServerSessionAsync(userId, session);
+                    continue;
+                }
+
+                if (command.Length > 0)
+                {
+                    pendingFlush.Append(command);
+                }
+
+                pendingFlush.Append(ch);
+                continue;
+            }
+
+            if (ch is '\b' or '\u007f')
+            {
+                if (buffer.Length > 0)
+                {
+                    buffer.Length--;
+                }
+                else
+                {
+                    pendingFlush.Append(ch);
+                }
+
+                continue;
+            }
+
+            buffer.Append(ch);
+            var candidate = buffer.ToString();
+            if (!ApiServerStartCommand.StartsWith(candidate, StringComparison.Ordinal))
+            {
+                pendingFlush.Append(candidate);
+                buffer.Clear();
+            }
+        }
+
+        if (pendingFlush.Length > 0)
+        {
+            await session.SendInputAsync(Encoding.UTF8.GetBytes(pendingFlush.ToString()));
+        }
+
+        if (buffer.Length == 0 && pendingFlush.Length == 0)
+        {
+            return true;
+        }
+
+        return true;
+    }
+
+    private async Task StartApiServerSessionAsync(Guid userId, TerminalSession terminalSession)
+    {
+        var result = _providerSessionRegistry.CreateTerminalBacked(
+            userId,
+            terminalSession.SessionId,
+            $"Terminal API Provider {terminalSession.SessionId:N}"[..30]);
+
+        var origin = GetOrigin();
+        var baseUrl = $"{origin}/v1";
+        var message = $"""
+
+[WebTerminal] API Provider Mode enabled for this terminal session.
+[WebTerminal] Run AGY in this same terminal, then connect your external harness with:
+
+OPENAI_BASE_URL={baseUrl}
+OPENAI_API_KEY={result.PlaintextApiKey}
+OPENAI_MODEL=agy
+
+[WebTerminal] This key is shown once. Regenerate it from the admin panel if needed.
+
+""";
+
+        await terminalSession.EmitSystemOutputAsync(message.Replace("\n", "\r\n"));
+    }
+
+    private string GetOrigin()
+    {
+        var request = Context.GetHttpContext()?.Request;
+        if (request == null)
+        {
+            return "http://gpt.dotge.net:5255";
+        }
+
+        return $"{request.Scheme}://{request.Host}";
     }
 
     /// <summary>

@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using WebPowerShell.Domain.Common;
 
@@ -81,6 +82,8 @@ public sealed class TerminalSession : IAsyncDisposable
     private readonly ILogger _logger;
     private Task? _inputPumpTask;
     private Task? _outputPumpTask;
+    private readonly object _apiCaptureLock = new();
+    private readonly List<ApiOutputCapture> _apiCaptures = [];
 
     public Func<byte[], Task>? OnOutput { get; set; }
     public Func<int?, Task>? OnExited { get; set; }
@@ -160,6 +163,53 @@ public sealed class TerminalSession : IAsyncDisposable
         await _inputChannel.Writer.WriteAsync(input, _cts.Token);
     }
 
+    public async Task EmitSystemOutputAsync(string text)
+    {
+        var data = Encoding.UTF8.GetBytes(text);
+        AppendToScrollback(data);
+
+        if (OnOutput != null && HasConnections)
+        {
+            await OnOutput(data);
+        }
+    }
+
+    public async Task<string> SendApiPromptAndCaptureAsync(
+        string prompt,
+        TimeSpan idleTimeout,
+        TimeSpan hardTimeout,
+        CancellationToken cancellationToken)
+    {
+        var capture = new ApiOutputCapture(idleTimeout);
+        lock (_apiCaptureLock)
+        {
+            _apiCaptures.Add(capture);
+        }
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
+        timeoutCts.CancelAfter(hardTimeout);
+        using var registration = timeoutCts.Token.Register(() => capture.TryCancel());
+
+        try
+        {
+            var normalized = prompt.EndsWith("\r", StringComparison.Ordinal) ||
+                prompt.EndsWith("\n", StringComparison.Ordinal)
+                    ? prompt
+                    : prompt + "\r";
+            await SendInputAsync(Encoding.UTF8.GetBytes(normalized));
+            return await capture.Task.WaitAsync(timeoutCts.Token);
+        }
+        finally
+        {
+            lock (_apiCaptureLock)
+            {
+                _apiCaptures.Remove(capture);
+            }
+
+            capture.Dispose();
+        }
+    }
+
     public async Task ResizeAsync(int columns, int rows)
     {
         LastActivityAt = DateTimeOffset.UtcNow;
@@ -192,6 +242,7 @@ public sealed class TerminalSession : IAsyncDisposable
 
                 // Always capture output to scrollback buffer (even if no clients connected)
                 AppendToScrollback(data);
+                NotifyApiCaptures(data);
 
                 if (OnOutput != null && HasConnections)
                 {
@@ -210,6 +261,25 @@ public sealed class TerminalSession : IAsyncDisposable
             {
                 await OnExited(Process.ExitCode);
             }
+        }
+    }
+
+    private void NotifyApiCaptures(byte[] data)
+    {
+        ApiOutputCapture[] captures;
+        lock (_apiCaptureLock)
+        {
+            if (_apiCaptures.Count == 0)
+            {
+                return;
+            }
+
+            captures = _apiCaptures.ToArray();
+        }
+
+        foreach (var capture in captures)
+        {
+            capture.Append(data);
         }
     }
 
@@ -281,6 +351,17 @@ public sealed class TerminalSession : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
+        lock (_apiCaptureLock)
+        {
+            foreach (var capture in _apiCaptures)
+            {
+                capture.TryCancel();
+                capture.Dispose();
+            }
+
+            _apiCaptures.Clear();
+        }
+
         _inputChannel.Writer.TryComplete();
         await Process.DisposeAsync();
         
@@ -288,5 +369,53 @@ public sealed class TerminalSession : IAsyncDisposable
         if (_outputPumpTask != null) await Task.WhenAny(_outputPumpTask);
         
         _cts.Dispose();
+    }
+
+    private sealed class ApiOutputCapture : IDisposable
+    {
+        private readonly object _lock = new();
+        private readonly StringBuilder _buffer = new();
+        private readonly TimeSpan _idleTimeout;
+        private readonly TaskCompletionSource<string> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private Timer? _idleTimer;
+
+        public ApiOutputCapture(TimeSpan idleTimeout)
+        {
+            _idleTimeout = idleTimeout;
+        }
+
+        public Task<string> Task => _completion.Task;
+
+        public void Append(byte[] data)
+        {
+            var text = Encoding.UTF8.GetString(data);
+            lock (_lock)
+            {
+                _buffer.Append(text);
+                _idleTimer ??= new Timer(_ => Complete(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+                _idleTimer.Change(_idleTimeout, Timeout.InfiniteTimeSpan);
+            }
+        }
+
+        public void TryCancel()
+        {
+            _completion.TrySetCanceled();
+        }
+
+        public void Dispose()
+        {
+            _idleTimer?.Dispose();
+        }
+
+        private void Complete()
+        {
+            string value;
+            lock (_lock)
+            {
+                value = _buffer.ToString().Trim();
+            }
+
+            _completion.TrySetResult(value);
+        }
     }
 }

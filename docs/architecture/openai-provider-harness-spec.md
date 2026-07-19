@@ -19,6 +19,32 @@ WebTerminal은 하나의 AGY Provider Session을 OpenAI 호환 모델 제공자�
 
 현재 WebTerminal의 기본 HTTP 포트는 `5255`다. 따라서 외부 하네스의 기본 `OPENAI_BASE_URL`은 `http://gpt.dotge.net:5255/v1`이다. 만약 운영 환경에서 443/HTTPS reverse proxy를 앞단에 붙이면 해당 proxy 주소, 예를 들어 `https://gpt.dotge.net/v1`, 를 사용하면 된다.
 
+## WebTerminal에서 API Mode 시작하기
+
+관리자는 WebTerminal 터미널에서 API 서버 전용 세션을 직접 시작할 수 있다.
+
+```powershell
+apiServerStart
+```
+
+이 명령은 일반 PowerShell 명령으로 실행되지 않는다. WebTerminal 서버가 입력을 감지해서 현재 터미널 tab/session을 API Provider Session으로 전환한다. 성공하면 터미널에 다음 값이 1회 출력된다.
+
+```text
+OPENAI_BASE_URL=http://gpt.dotge.net:5255/v1
+OPENAI_API_KEY=wta_...
+OPENAI_MODEL=agy
+```
+
+그 다음 같은 터미널 세션에서 관리자가 `agy`를 실행한다.
+
+```powershell
+agy
+```
+
+이후 외부 하네스가 `/v1/chat/completions` 또는 `/v1/responses`로 보낸 입력은 새 AGY 프로세스를 만들지 않고, `apiServerStart`로 전환된 터미널 세션의 AGY stdin으로 전달된다. AGY 출력은 WebTerminal 서버가 받아 OpenAI 호환 응답으로 변환한다.
+
+현재 1차 구현의 응답 경계는 terminal output idle/timeout 기반이다. 운영 안정화를 위해서는 AGY hook 또는 transcript 기반 completion boundary로 보강하는 것이 다음 단계다.
+
 ```mermaid
 sequenceDiagram
     participant Admin as WebTerminal Admin

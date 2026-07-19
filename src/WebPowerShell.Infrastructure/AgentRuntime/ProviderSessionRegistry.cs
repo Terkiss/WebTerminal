@@ -92,6 +92,42 @@ public sealed class ProviderSessionRegistry
         return new CreateProviderSessionResult(session, apiKey, probe);
     }
 
+    public CreateProviderSessionResult CreateTerminalBacked(
+        Guid ownerUserId,
+        Guid terminalSessionId,
+        string? displayName = null)
+    {
+        var apiKey = GenerateApiKey();
+        var now = _timeProvider.GetUtcNow();
+        var session = new ProviderSession
+        {
+            OwnerUserId = ownerUserId,
+            Profile = "terminal-api-server",
+            DisplayName = string.IsNullOrWhiteSpace(displayName)
+                ? "Terminal API Provider Session"
+                : displayName.Trim(),
+            ApiKeyHash = ProviderSession.HashApiKey(apiKey),
+            State = ProviderSessionState.Ready,
+            TerminalSessionId = terminalSessionId,
+            IsTerminalBacked = true,
+            CreatedAt = now,
+            UpdatedAt = now,
+            ExpiresAt = now.AddHours(8)
+        };
+
+        _sessions[session.SessionId] = session;
+        _logger.LogInformation(
+            "Created terminal-backed provider session {SessionId} for terminal session {TerminalSessionId} and user {UserId}",
+            session.SessionId,
+            terminalSessionId,
+            ownerUserId);
+
+        return new CreateProviderSessionResult(
+            session,
+            apiKey,
+            new AgyRuntimeProbeResult(true, null, null));
+    }
+
     public ProviderSession? FindByApiKey(string apiKey)
     {
         if (string.IsNullOrWhiteSpace(apiKey))
@@ -161,7 +197,10 @@ public sealed class ProviderSessionRegistry
         session.AgyProcessId = null;
         session.UpdatedAt = _timeProvider.GetUtcNow();
         session.FailureReason = "Provider session was revoked.";
-        _sessionStore.Save(session);
+        if (!session.IsTerminalBacked)
+        {
+            _sessionStore.Save(session);
+        }
         _logger.LogInformation("Revoked provider session {SessionId} for user {UserId}", sessionId, ownerUserId);
         return true;
     }
@@ -177,7 +216,10 @@ public sealed class ProviderSessionRegistry
         var apiKey = GenerateApiKey();
         session.ApiKeyHash = ProviderSession.HashApiKey(apiKey);
         session.UpdatedAt = _timeProvider.GetUtcNow();
-        _sessionStore.Save(session);
+        if (!session.IsTerminalBacked)
+        {
+            _sessionStore.Save(session);
+        }
 
         _logger.LogInformation("Regenerated provider API key for session {SessionId} and user {UserId}", sessionId, ownerUserId);
         return new RegenerateProviderApiKeyResult(session, apiKey);
@@ -232,7 +274,10 @@ public sealed class ProviderSessionRegistry
             _ => session.State
         };
         session.UpdatedAt = now;
-        _sessionStore.Save(session);
+        if (!session.IsTerminalBacked)
+        {
+            _sessionStore.Save(session);
+        }
 
         _logger.LogInformation(
             "Accepted AGY event {EventType} for provider session {ProviderSessionId}",
@@ -250,6 +295,11 @@ public sealed class ProviderSessionRegistry
 
     public void Save(ProviderSession session)
     {
+        if (session.IsTerminalBacked)
+        {
+            return;
+        }
+
         _sessionStore.Save(session);
     }
 
@@ -291,7 +341,10 @@ public sealed class ProviderSessionRegistry
         session.AgyProcessId = null;
         session.UpdatedAt = now;
         session.FailureReason = "Provider session expired.";
-        _sessionStore.Save(session);
+        if (!session.IsTerminalBacked)
+        {
+            _sessionStore.Save(session);
+        }
         _logger.LogInformation("Expired provider session {SessionId}", session.SessionId);
     }
 
