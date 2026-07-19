@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using WebPowerShell.Application.Common.Interfaces;
@@ -84,6 +85,12 @@ public sealed class OpenAiCompatibleController : ControllerBase
         {
             await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "UnsupportedModel", cancellationToken);
             return BadRequest(new { error = new { message = "Only model 'agy' is supported.", type = "invalid_request_error" } });
+        }
+
+        if (request.N > 1)
+        {
+            await WriteAuditAsync(session, "agent.provider.chat", "Rejected", "UnsupportedN", cancellationToken);
+            return BadRequest(new { error = new { message = "Only n=1 is supported.", type = "invalid_request_error" } });
         }
 
         if (session.State == ProviderSessionState.Failed)
@@ -228,6 +235,405 @@ public sealed class OpenAiCompatibleController : ControllerBase
             _registry.Save(session);
             session.RequestLock.Release();
         }
+    }
+
+    [HttpPost("responses")]
+    public async Task<IActionResult> CreateResponse(
+        [FromBody] ResponsesRequest request,
+        CancellationToken cancellationToken)
+    {
+        var session = AuthenticateProviderSession();
+        if (session == null)
+        {
+            return Unauthorized(new { error = new { message = "Invalid provider API key.", type = "invalid_api_key" } });
+        }
+
+        if (request.Model != "agy")
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "UnsupportedModel", cancellationToken);
+            return BadRequest(new { error = new { message = "Only model 'agy' is supported.", type = "invalid_request_error" } });
+        }
+
+        if (session.State == ProviderSessionState.Failed)
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Failed", session.FailureReason, cancellationToken);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                error = new
+                {
+                    message = session.FailureReason ?? "Provider session is not available.",
+                    type = "provider_unavailable"
+                }
+            });
+        }
+
+        var userPrompt = BuildAgyPromptForResponses(request, out var isToolResultRequest);
+        if (string.IsNullOrWhiteSpace(userPrompt))
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "PromptRequired", cancellationToken);
+            return BadRequest(new { error = new { message = "Input prompt is required.", type = "invalid_request_error" } });
+        }
+
+        if (!CanAcceptRequest(session.State, isToolResultRequest))
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "ProviderNotReady", cancellationToken);
+            return Conflict(new
+            {
+                error = new
+                {
+                    message = $"Provider session is not ready. Current state: {session.State}.",
+                    type = "provider_not_ready"
+                }
+            });
+        }
+
+        if (session.State == ProviderSessionState.Generating ||
+            (session.State == ProviderSessionState.WaitingForToolResult && !isToolResultRequest))
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "SessionBusy", cancellationToken);
+            return Conflict(new { error = new { message = "Provider session is busy.", type = "session_busy" } });
+        }
+
+        if (!await session.RequestLock.WaitAsync(0, cancellationToken))
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "SessionBusy", cancellationToken);
+            return Conflict(new { error = new { message = "Provider session is busy.", type = "session_busy" } });
+        }
+
+        try
+        {
+            if (!session.TryAcceptRequestId(GetIdempotencyKey()))
+            {
+                await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "DuplicateRequest", cancellationToken);
+                return Conflict(new { error = new { message = "Duplicate Idempotency-Key for this provider session.", type = "duplicate_request" } });
+            }
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_requestTimeout);
+
+            var completion = await _runtimeManager.CompleteAsync(session, userPrompt, timeoutCts.Token);
+            if (!completion.IsSuccess)
+            {
+                await WriteAuditAsync(session, "agent.provider.responses", "Failed", completion.ErrorMessage, cancellationToken);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+                {
+                    error = new
+                    {
+                        message = completion.ErrorMessage ?? "AGY completion failed.",
+                        type = "provider_error"
+                    }
+                });
+            }
+
+            var output = await ResolveCompletionTextAsync(session, completion.Text, cancellationToken);
+            var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var parsed = ParseAgyChatOutput(output);
+            if (parsed.ToolCalls.Count > 0)
+            {
+                session.State = ProviderSessionState.WaitingForToolResult;
+                session.UpdatedAt = DateTimeOffset.UtcNow;
+            }
+
+            await WriteAuditAsync(
+                session,
+                parsed.ToolCalls.Count > 0 ? "agent.provider.responses.tool_call" : "agent.provider.responses",
+                "Success",
+                null,
+                cancellationToken);
+
+            if (request.Stream)
+            {
+                await WriteStreamingResponseAsync(parsed, now, cancellationToken);
+                return new EmptyResult();
+            }
+
+            var responseId = $"resp_{Guid.NewGuid():N}";
+            var outputItems = new List<object>();
+
+            if (parsed.ToolCalls.Count > 0)
+            {
+                foreach (var toolCall in parsed.ToolCalls)
+                {
+                    outputItems.Add(new
+                    {
+                        id = $"item_{Guid.NewGuid():N}",
+                        @object = "response.output_item",
+                        type = "function_call",
+                        name = toolCall.Function.Name,
+                        arguments = toolCall.Function.Arguments,
+                        call_id = toolCall.Id
+                    });
+                }
+            }
+            else
+            {
+                outputItems.Add(new
+                {
+                    id = $"item_{Guid.NewGuid():N}",
+                    @object = "response.output_item",
+                    type = "message",
+                    role = "assistant",
+                    content = new[]
+                    {
+                        new { type = "text", text = parsed.Content ?? string.Empty }
+                    }
+                });
+            }
+
+            var response = new
+            {
+                id = responseId,
+                @object = "response",
+                created_at = now,
+                model = "agy",
+                status = parsed.ToolCalls.Count > 0 ? "requires_action" : "completed",
+                output = outputItems,
+                usage = new
+                {
+                    total_tokens = 0,
+                    input_tokens = 0,
+                    output_tokens = 0
+                }
+            };
+
+            return Ok(response);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Failed", "Timeout", CancellationToken.None);
+            return StatusCode(StatusCodes.Status504GatewayTimeout, new
+            {
+                error = new
+                {
+                    message = "AGY completion timed out.",
+                    type = "provider_timeout"
+                }
+            });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await WriteAuditAsync(session, "agent.provider.responses", "Cancelled", "ClientDisconnected", CancellationToken.None);
+            return new EmptyResult();
+        }
+        finally
+        {
+            _registry.Save(session);
+            session.RequestLock.Release();
+        }
+    }
+
+    private static string? BuildAgyPromptForResponses(ResponsesRequest request, out bool isToolResultRequest)
+    {
+        isToolResultRequest = false;
+        string? content = null;
+        string? toolCallId = null;
+        string? toolName = null;
+
+        if (request.Input.ValueKind == JsonValueKind.String)
+        {
+            content = request.Input.GetString();
+        }
+        else if (request.Input.ValueKind == JsonValueKind.Array)
+        {
+            var elements = request.Input.EnumerateArray().ToList();
+            if (elements.Count > 0)
+            {
+                var lastMessage = elements[^1];
+                if (lastMessage.TryGetProperty("role", out var roleElement) && roleElement.ValueKind == JsonValueKind.String)
+                {
+                    var role = roleElement.GetString();
+                    if (string.Equals(role, "user", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (lastMessage.TryGetProperty("content", out var contentElement))
+                        {
+                            content = ChatMessage.GetContentAsString(contentElement);
+                        }
+                    }
+                    else if (string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase))
+                    {
+                        isToolResultRequest = true;
+                        if (lastMessage.TryGetProperty("content", out var contentElement))
+                        {
+                            content = ChatMessage.GetContentAsString(contentElement);
+                        }
+                        if (lastMessage.TryGetProperty("tool_call_id", out var idElement))
+                        {
+                            toolCallId = idElement.GetString();
+                        }
+                        if (lastMessage.TryGetProperty("name", out var nameElement))
+                        {
+                            toolName = nameElement.GetString();
+                        }
+                    }
+                }
+                if (lastMessage.TryGetProperty("type", out var typeElement) && typeElement.ValueKind == JsonValueKind.String)
+                {
+                    var type = typeElement.GetString();
+                    if (string.Equals(type, "function_call_output", StringComparison.OrdinalIgnoreCase))
+                    {
+                        isToolResultRequest = true;
+                        if (lastMessage.TryGetProperty("output", out var outputElement))
+                        {
+                            content = outputElement.GetString();
+                        }
+                        if (lastMessage.TryGetProperty("call_id", out var callIdElement))
+                        {
+                            toolCallId = callIdElement.GetString();
+                        }
+                    }
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return null;
+        }
+
+        if (isToolResultRequest)
+        {
+            return $"""
+Tool result received.
+tool_call_id: {toolCallId ?? "unknown"}
+name: {toolName ?? "unknown"}
+
+{content}
+
+Continue from this tool result. If another tool is needed, return the tool call JSON format exactly.
+""";
+        }
+
+        var sb = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(request.Instructions))
+        {
+            sb.AppendLine(request.Instructions);
+            sb.AppendLine();
+        }
+        sb.AppendLine(content);
+
+        if (request.Tools is { Count: > 0 } && !IsToolChoiceNone(request.ToolChoice))
+        {
+            const string toolCallFormat =
+                """{"tool_calls":[{"id":"call_<unique>","type":"function","function":{"name":"<tool name>","arguments":"<JSON string arguments>"}}]}""";
+            var toolsJson = JsonSerializer.Serialize(request.Tools, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            var toolChoiceInstruction = GetToolChoiceInstruction(request.ToolChoice);
+            
+            sb.AppendLine();
+            sb.AppendLine("Available external tools are provided below. WebTerminal cannot execute them. If a tool is required, respond with only this JSON object:");
+            sb.AppendLine(toolCallFormat);
+            if (!string.IsNullOrEmpty(toolChoiceInstruction))
+            {
+                sb.AppendLine(toolChoiceInstruction.TrimStart('\r', '\n'));
+            }
+            sb.AppendLine();
+            sb.AppendLine("Tools:");
+            sb.Append(toolsJson);
+        }
+
+        return sb.ToString();
+    }
+
+    private async Task WriteStreamingResponseAsync(ParsedAgyChatOutput parsed, long created, CancellationToken cancellationToken)
+    {
+        var responseId = $"resp_{Guid.NewGuid():N}";
+        Response.StatusCode = StatusCodes.Status200OK;
+        Response.ContentType = "text/event-stream";
+        Response.Headers.CacheControl = "no-cache";
+        Response.Headers.Connection = "keep-alive";
+
+        var responseData = new
+        {
+            id = responseId,
+            @object = "response",
+            created_at = created,
+            model = "agy",
+            status = "in_progress",
+            usage = new { total_tokens = 0, input_tokens = 0, output_tokens = 0 }
+        };
+
+        await WriteSseAsync(new
+        {
+            type = "response.created",
+            response = responseData
+        }, cancellationToken);
+
+        if (parsed.ToolCalls.Count > 0)
+        {
+            foreach (var toolCall in parsed.ToolCalls)
+            {
+                var itemId = $"item_{Guid.NewGuid():N}";
+                await WriteSseAsync(new
+                {
+                    type = "response.output_item.added",
+                    response_id = responseId,
+                    output_index = 0,
+                    item = new
+                    {
+                        id = itemId,
+                        @object = "response.output_item",
+                        type = "function_call",
+                        name = toolCall.Function.Name,
+                        call_id = toolCall.Id
+                    }
+                }, cancellationToken);
+
+                await WriteSseAsync(new
+                {
+                    type = "response.function_call_arguments.delta",
+                    response_id = responseId,
+                    item_id = itemId,
+                    output_index = 0,
+                    call_id = toolCall.Id,
+                    delta = toolCall.Function.Arguments
+                }, cancellationToken);
+            }
+        }
+        else if (!string.IsNullOrEmpty(parsed.Content))
+        {
+            var itemId = $"item_{Guid.NewGuid():N}";
+            await WriteSseAsync(new
+            {
+                type = "response.output_item.added",
+                response_id = responseId,
+                output_index = 0,
+                item = new
+                {
+                    id = itemId,
+                    @object = "response.output_item",
+                    type = "message",
+                    role = "assistant",
+                    content = Array.Empty<object>()
+                }
+            }, cancellationToken);
+
+            await WriteSseAsync(new
+            {
+                type = "response.output_text.delta",
+                response_id = responseId,
+                item_id = itemId,
+                output_index = 0,
+                content_index = 0,
+                delta = parsed.Content
+            }, cancellationToken);
+        }
+
+        var completedStatus = parsed.ToolCalls.Count > 0 ? "requires_action" : "completed";
+        await WriteSseAsync(new
+        {
+            type = "response.completed",
+            response = new
+            {
+                id = responseId,
+                @object = "response",
+                created_at = created,
+                model = "agy",
+                status = completedStatus,
+                usage = new { total_tokens = 0, input_tokens = 0, output_tokens = 0 }
+            }
+        }, cancellationToken);
+
+        await Response.WriteAsync("data: [DONE]\n\n", cancellationToken);
+        await Response.Body.FlushAsync(cancellationToken);
     }
 
     private static TimeSpan GetRequestTimeout(IConfiguration configuration)
@@ -614,7 +1020,17 @@ public sealed record ChatCompletionRequest(
     [property: JsonPropertyName("temperature")] double? Temperature = null,
     [property: JsonPropertyName("max_tokens")] int? MaxTokens = null,
     [property: JsonPropertyName("user")] string? User = null,
-    [property: JsonPropertyName("metadata")] Dictionary<string, object>? Metadata = null);
+    [property: JsonPropertyName("metadata")] Dictionary<string, object>? Metadata = null,
+    [property: JsonPropertyName("stop")] JsonElement? Stop = null,
+    [property: JsonPropertyName("response_format")] JsonElement? ResponseFormat = null,
+    [property: JsonPropertyName("seed")] int? Seed = null,
+    [property: JsonPropertyName("n")] int? N = null,
+    [property: JsonPropertyName("top_p")] double? TopP = null,
+    [property: JsonPropertyName("presence_penalty")] double? PresencePenalty = null,
+    [property: JsonPropertyName("frequency_penalty")] double? FrequencyPenalty = null,
+    [property: JsonPropertyName("logprobs")] bool? Logprobs = null,
+    [property: JsonPropertyName("top_logprobs")] int? TopLogprobs = null,
+    [property: JsonPropertyName("parallel_tool_calls")] bool? ParallelToolCalls = null);
 
 public sealed record ChatMessage(
     [property: JsonPropertyName("role")] string Role,
@@ -623,18 +1039,20 @@ public sealed record ChatMessage(
     [property: JsonPropertyName("name")] string? Name = null,
     [property: JsonPropertyName("tool_calls")] JsonElement? ToolCalls = null)
 {
-    public string GetContentAsString()
+    public string GetContentAsString() => GetContentAsString(Content);
+
+    public static string GetContentAsString(JsonElement content)
     {
-        return Content.ValueKind switch
+        return content.ValueKind switch
         {
-            JsonValueKind.String => Content.GetString() ?? string.Empty,
+            JsonValueKind.String => content.GetString() ?? string.Empty,
             JsonValueKind.Array => string.Join(
                 Environment.NewLine,
-                Content.EnumerateArray()
+                content.EnumerateArray()
                     .Select(part => TryGetTextPart(part))
                     .Where(text => !string.IsNullOrWhiteSpace(text))),
             JsonValueKind.Null or JsonValueKind.Undefined => string.Empty,
-            _ => Content.GetRawText()
+            _ => content.GetRawText()
         };
     }
 
@@ -698,3 +1116,17 @@ public sealed record OpenAiToolCall(
 public sealed record OpenAiFunctionCall(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("arguments")] string Arguments);
+
+public sealed record ResponsesRequest(
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("input")] JsonElement Input,
+    [property: JsonPropertyName("instructions")] string? Instructions = null,
+    [property: JsonPropertyName("tools")] IReadOnlyList<JsonElement>? Tools = null,
+    [property: JsonPropertyName("tool_choice")] JsonElement? ToolChoice = null,
+    [property: JsonPropertyName("parallel_tool_calls")] bool? ParallelToolCalls = null,
+    [property: JsonPropertyName("previous_response_id")] string? PreviousResponseId = null,
+    [property: JsonPropertyName("stream")] bool Stream = false,
+    [property: JsonPropertyName("temperature")] double? Temperature = null,
+    [property: JsonPropertyName("max_output_tokens")] int? MaxOutputTokens = null,
+    [property: JsonPropertyName("metadata")] Dictionary<string, object>? Metadata = null,
+    [property: JsonPropertyName("user")] string? User = null);

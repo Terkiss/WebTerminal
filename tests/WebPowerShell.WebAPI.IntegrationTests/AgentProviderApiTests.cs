@@ -1119,6 +1119,321 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         await SeedUserAsync(_factory, username, plaintextPassword, isAdmin);
     }
 
+    [Fact]
+    public async Task ResponsesApi_ReturnsTextResponse()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("responses text");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-resp-text-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-resp-text-admin",
+            Password = password
+        });
+        Assert.Equal(HttpStatusCode.OK, loginResponse.StatusCode);
+
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Resp Text Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = "hello responses",
+                stream = false
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = await ReadJsonAsync(response);
+
+        Assert.Equal("response", json.RootElement.GetProperty("object").GetString());
+        Assert.Equal("completed", json.RootElement.GetProperty("status").GetString());
+        var output = json.RootElement.GetProperty("output");
+        Assert.Equal(1, output.GetArrayLength());
+        Assert.Equal("message", output[0].GetProperty("type").GetString());
+        Assert.Equal("assistant", output[0].GetProperty("role").GetString());
+        Assert.Equal("responses text", output[0].GetProperty("content")[0].GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task ResponsesApi_ReturnsFunctionCallOutputItem()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("{\"tool_calls\":[{\"id\":\"call_resp\",\"type\":\"function\",\"function\":{\"name\":\"read_text_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]}");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-resp-func-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-resp-func-admin",
+            Password = password
+        });
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Resp Func Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = "read file",
+                stream = false
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = await ReadJsonAsync(response);
+
+        Assert.Equal("requires_action", json.RootElement.GetProperty("status").GetString());
+        var output = json.RootElement.GetProperty("output");
+        Assert.Equal(1, output.GetArrayLength());
+        Assert.Equal("function_call", output[0].GetProperty("type").GetString());
+        Assert.Equal("read_text_file", output[0].GetProperty("name").GetString());
+        Assert.Equal("{\"path\":\"README.md\"}", output[0].GetProperty("arguments").GetString());
+        Assert.Equal("call_resp", output[0].GetProperty("call_id").GetString());
+    }
+
+    [Fact]
+    public async Task ResponsesApi_RejectsUnsupportedModel()
+    {
+        var client = _factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync("provider-resp-model-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-resp-model-admin",
+            Password = password
+        });
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Resp Model Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "gpt-4",
+                input = "test"
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ResponsesApi_RequiresProviderReady()
+    {
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, StartingRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-resp-start-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-resp-start-admin",
+            Password = password
+        });
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Resp Start Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = "too soon"
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ResponsesApi_StreamsTextDeltas()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("streamed text");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-resp-stream-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-resp-stream-admin",
+            Password = password
+        });
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Resp Stream Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                input = "stream this",
+                stream = true
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var sse = await response.Content.ReadAsStringAsync();
+        Assert.Contains("data: [DONE]", sse);
+        Assert.Contains("\"type\":\"response.output_text.delta\"", sse);
+        Assert.Contains("\"delta\":\"streamed text\"", sse);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_RejectsUnsupportedN()
+    {
+        var client = _factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync("provider-chat-n-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-chat-n-admin",
+            Password = password
+        });
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Chat N Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "hello" } },
+                n = 2
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ChatCompletion_AcceptsParallelToolCallsFlag()
+    {
+        SequencedRuntimeManager.Outputs.Clear();
+        SequencedRuntimeManager.Outputs.Enqueue("parallel accepted");
+        var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IAgyRuntimeManager>();
+                services.AddSingleton<IAgyRuntimeManager, SequencedRuntimeManager>();
+            });
+        });
+        var client = factory.CreateClient();
+        const string password = "CorrectPassword123!";
+        await SeedUserAsync(factory, "provider-chat-parallel-admin", password, isAdmin: true);
+
+        var loginResponse = await client.PostAsJsonAsync("/api/auth/login", new LoginCommand
+        {
+            Username = "provider-chat-parallel-admin",
+            Password = password
+        });
+        var createResponse = await client.PostAsJsonAsync("/api/agent/provider-sessions", new
+        {
+            profile = "agy-default",
+            displayName = "Chat Parallel Provider"
+        });
+        var created = await ReadJsonAsync(createResponse);
+        var apiKey = created.RootElement.GetProperty("apiKey").GetString();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = JsonContent.Create(new
+            {
+                model = "agy",
+                messages = new[] { new { role = "user", content = "parallel tools" } },
+                parallel_tool_calls = false
+            })
+        };
+        request.Headers.Authorization = new("Bearer", apiKey);
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     private async Task SeedUserAsync(
         WebApplicationFactory<Program> factory,
         string username,

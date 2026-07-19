@@ -21,6 +21,7 @@ def main() -> int:
     parser.add_argument("--prompt", default="Use the read_text_file tool to read README.md, then summarize it in one sentence.")
     parser.add_argument("--stream", action="store_true", help="Use SSE streaming for the first provider request.")
     parser.add_argument("--strict-tools", action="store_true", help="Fail if the first response does not request a tool.")
+    parser.add_argument("--api", choices=["chat", "responses"], default="chat", help="Which API to smoke test")
     args = parser.parse_args()
 
     if not args.api_key:
@@ -34,7 +35,6 @@ def main() -> int:
         print("Model 'agy' was not listed by provider", file=sys.stderr)
         return 1
 
-    messages = [{"role": "user", "content": args.prompt}]
     tools = [
         {
             "type": "function",
@@ -50,17 +50,25 @@ def main() -> int:
         }
     ]
 
-    first_payload = {"model": "agy", "messages": messages, "tools": tools, "stream": args.stream}
+    if args.api == "chat":
+        return run_chat_smoke(client, workspace, args.prompt, tools, args.stream, args.strict_tools)
+    else:
+        return run_responses_smoke(client, workspace, args.prompt, tools, args.stream, args.strict_tools)
+
+
+def run_chat_smoke(client: ProviderClient, workspace: Path, prompt: str, tools: list, stream: bool, strict_tools: bool) -> int:
+    messages = [{"role": "user", "content": prompt}]
+    first_payload = {"model": "agy", "messages": messages, "tools": tools, "stream": stream}
     first = client.post(
         "/chat/completions",
         first_payload,
         idempotency_key=f"provider-smoke-first-{uuid.uuid4().hex}",
-        stream=args.stream,
+        stream=stream,
     )
     choice = first["choices"][0]
     tool_calls = choice["message"].get("tool_calls") or []
     if not tool_calls:
-        if args.strict_tools:
+        if strict_tools:
             print("Provider returned no tool calls in strict tool mode", file=sys.stderr)
             return 1
         print(choice["message"].get("content", ""))
@@ -85,6 +93,57 @@ def main() -> int:
     )
     validate_completion(final)
     print(final["choices"][0]["message"].get("content", ""))
+    return 0
+
+
+def run_responses_smoke(client: ProviderClient, workspace: Path, prompt: str, tools: list, stream: bool, strict_tools: bool) -> int:
+    first_payload = {"model": "agy", "input": prompt, "tools": tools, "stream": stream}
+    first = client.post(
+        "/responses",
+        first_payload,
+        idempotency_key=f"provider-smoke-first-{uuid.uuid4().hex}",
+        stream=stream,
+    )
+    
+    outputs = first.get("output", [])
+    function_calls = [item for item in outputs if item.get("type") == "function_call"]
+    if not function_calls:
+        if strict_tools:
+            print("Provider returned no tool calls in strict tool mode", file=sys.stderr)
+            return 1
+        messages = [item for item in outputs if item.get("type") == "message"]
+        if messages:
+            content_arr = messages[0].get("content", [])
+            if content_arr:
+                print(content_arr[0].get("text", ""))
+        return 0
+
+    messages_payload = [{"role": "user", "content": prompt}]
+    for call in function_calls:
+        tool_call = {
+            "function": {
+                "name": call.get("name"),
+                "arguments": call.get("arguments", "{}")
+            }
+        }
+        result = execute_tool_call(workspace, tool_call)
+        messages_payload.append({
+            "type": "function_call_output",
+            "call_id": call.get("call_id"),
+            "output": result
+        })
+
+    final = client.post(
+        "/responses",
+        {"model": "agy", "input": messages_payload},
+        idempotency_key=f"provider-smoke-final-{uuid.uuid4().hex}",
+    )
+    final_outputs = final.get("output", [])
+    final_messages = [item for item in final_outputs if item.get("type") == "message"]
+    if final_messages:
+        content_arr = final_messages[0].get("content", [])
+        if content_arr:
+            print(content_arr[0].get("text", ""))
     return 0
 
 
@@ -153,33 +212,65 @@ class ProviderClient:
         try:
             with urllib.request.urlopen(request, timeout=180) as response:
                 body = response.read().decode("utf-8")
-                return parse_sse_completion(body) if stream else json.loads(body)
+                return parse_sse_completion(body, "/responses" in path) if stream else json.loads(body)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
 
 
-def parse_sse_completion(body: str) -> dict:
-    message: dict = {"role": "assistant"}
-    finish_reason = None
-    for line in body.splitlines():
-        if not line.startswith("data:"):
-            continue
+def parse_sse_completion(body: str, is_responses_api: bool = False) -> dict:
+    if is_responses_api:
+        response_obj: dict = {"output": []}
+        for line in body.splitlines():
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                continue
+            event = json.loads(data)
+            evt_type = event.get("type")
+            if evt_type == "response.created":
+                pass
+            elif evt_type == "response.output_item.added":
+                item = event.get("item", {})
+                response_obj["output"].append(item)
+            elif evt_type == "response.output_text.delta":
+                delta = event.get("delta", "")
+                idx = event.get("output_index", 0)
+                if idx < len(response_obj["output"]):
+                    content_arr = response_obj["output"][idx].setdefault("content", [{"type": "text", "text": ""}])
+                    if content_arr:
+                        content_arr[0]["text"] += delta
+            elif evt_type == "response.function_call_arguments.delta":
+                delta = event.get("delta", "")
+                idx = event.get("output_index", 0)
+                if idx < len(response_obj["output"]):
+                    args = response_obj["output"][idx].get("arguments", "")
+                    response_obj["output"][idx]["arguments"] = args + delta
+            elif evt_type == "response.completed":
+                response_obj["status"] = event.get("response", {}).get("status")
+        return response_obj
+    else:
+        message: dict = {"role": "assistant"}
+        finish_reason = None
+        for line in body.splitlines():
+            if not line.startswith("data:"):
+                continue
 
-        data = line[5:].strip()
-        if data == "[DONE]":
-            continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                continue
 
-        event = json.loads(data)
-        choice = (event.get("choices") or [{}])[0]
-        delta = choice.get("delta") or {}
-        finish_reason = choice.get("finish_reason") or finish_reason
-        if "content" in delta:
-            message["content"] = (message.get("content") or "") + (delta.get("content") or "")
-        if "tool_calls" in delta:
-            message["tool_calls"] = delta["tool_calls"]
+            event = json.loads(data)
+            choice = (event.get("choices") or [{}])[0]
+            delta = choice.get("delta") or {}
+            finish_reason = choice.get("finish_reason") or finish_reason
+            if "content" in delta:
+                message["content"] = (message.get("content") or "") + (delta.get("content") or "")
+            if "tool_calls" in delta:
+                message["tool_calls"] = delta["tool_calls"]
 
-    return {"choices": [{"message": message, "finish_reason": finish_reason}]}
+        return {"choices": [{"message": message, "finish_reason": finish_reason}]}
 
 
 def validate_completion(completion: dict) -> None:
