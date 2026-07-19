@@ -387,6 +387,53 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
     }
 
     [Fact]
+    public async Task InternalAgentEvents_RejectsPublicNetworkSource()
+    {
+        using var factory = new TestWebApplicationFactory();
+        var client = factory.CreateClient();
+        var eventBody = JsonSerializer.Serialize(new
+        {
+            eventId = "evt-public-source",
+            eventType = "invocation.completed",
+            providerSessionId = Guid.NewGuid(),
+            timestamp = factory.TimeProvider.GetUtcNow()
+        });
+
+        using var eventRequest = BuildSignedInternalEventRequest(
+            eventBody,
+            "nonce-public-source",
+            factory.TimeProvider.GetUtcNow(),
+            forwardedFor: "8.8.8.8");
+        var eventResponse = await client.SendAsync(eventRequest);
+
+        Assert.Equal(HttpStatusCode.Forbidden, eventResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task InternalAgentEvents_AllowsPrivateNetworkSource()
+    {
+        using var factory = new TestWebApplicationFactory();
+        var client = factory.CreateClient();
+        var missingSessionId = Guid.NewGuid();
+        var eventBody = JsonSerializer.Serialize(new
+        {
+            eventId = "evt-private-source",
+            eventType = "invocation.completed",
+            providerSessionId = missingSessionId,
+            timestamp = factory.TimeProvider.GetUtcNow()
+        });
+
+        using var eventRequest = BuildSignedInternalEventRequest(
+            eventBody,
+            "nonce-private-source",
+            factory.TimeProvider.GetUtcNow(),
+            forwardedFor: "192.168.1.25");
+        var eventResponse = await client.SendAsync(eventRequest);
+
+        Assert.Equal(HttpStatusCode.NotFound, eventResponse.StatusCode);
+    }
+
+    [Fact]
     public async Task ChatCompletion_FallsBackToTranscriptDeltaWhenRuntimeStdoutIsEmpty()
     {
         var factory = _factory.WithWebHostBuilder(builder =>
@@ -1101,7 +1148,11 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         return await JsonDocument.ParseAsync(stream);
     }
 
-    private static HttpRequestMessage BuildSignedInternalEventRequest(string body, string nonce, DateTimeOffset now)
+    private static HttpRequestMessage BuildSignedInternalEventRequest(
+        string body,
+        string nonce,
+        DateTimeOffset now,
+        string? forwardedFor = "127.0.0.1")
     {
         const string secret = "integration-test-agent-event-secret";
         var timestamp = now.ToUnixTimeSeconds().ToString();
@@ -1116,6 +1167,11 @@ public sealed class AgentProviderApiTests : IClassFixture<TestWebApplicationFact
         request.Headers.Add("X-Agent-Event-Timestamp", timestamp);
         request.Headers.Add("X-Agent-Event-Nonce", nonce);
         request.Headers.Add("X-Agent-Event-Signature", signature);
+        if (!string.IsNullOrWhiteSpace(forwardedFor))
+        {
+            request.Headers.Add("X-Forwarded-For", forwardedFor);
+        }
+
         return request;
     }
 

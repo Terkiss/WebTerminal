@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -42,6 +43,11 @@ public sealed class InternalAgentEventsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Receive(CancellationToken cancellationToken)
     {
+        if (!IsAllowedInternalSource(HttpContext.Connection.RemoteIpAddress))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { error = "Internal agent events are restricted to local or private network callers." });
+        }
+
         using var reader = new StreamReader(Request.Body, Encoding.UTF8);
         var body = await reader.ReadToEndAsync(cancellationToken);
         if (!VerifyRequest(body, out var failure))
@@ -155,6 +161,42 @@ public sealed class InternalAgentEventsController : ControllerBase
         }
 
         return true;
+    }
+
+    private static bool IsAllowedInternalSource(IPAddress? remoteIpAddress)
+    {
+        if (remoteIpAddress == null)
+        {
+            return false;
+        }
+
+        if (IPAddress.IsLoopback(remoteIpAddress))
+        {
+            return true;
+        }
+
+        if (remoteIpAddress.IsIPv4MappedToIPv6)
+        {
+            remoteIpAddress = remoteIpAddress.MapToIPv4();
+        }
+
+        var bytes = remoteIpAddress.GetAddressBytes();
+        if (remoteIpAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            return bytes[0] == 10 ||
+                   bytes[0] == 127 ||
+                   (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
+                   (bytes[0] == 192 && bytes[1] == 168) ||
+                   (bytes[0] == 169 && bytes[1] == 254);
+        }
+
+        if (remoteIpAddress.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+        {
+            return remoteIpAddress.IsIPv6LinkLocal ||
+                   (bytes[0] & 0xfe) == 0xfc;
+        }
+
+        return false;
     }
 
     private void CleanupNonces()
