@@ -242,10 +242,10 @@ public class TerminalHub : Hub
         {
             if (ch is '\r' or '\n')
             {
-                var command = buffer.ToString();
+                var command = NormalizeApiServerCommandCandidate(buffer.ToString());
                 buffer.Clear();
 
-                if (string.Equals(command, ApiServerStartCommand, StringComparison.Ordinal))
+                if (string.Equals(command, ApiServerStartCommand, StringComparison.OrdinalIgnoreCase))
                 {
                     if (!Context.User.IsInRole("Admin"))
                     {
@@ -281,10 +281,10 @@ public class TerminalHub : Hub
             }
 
             buffer.Append(ch);
-            var candidate = buffer.ToString();
-            if (!ApiServerStartCommand.StartsWith(candidate, StringComparison.Ordinal))
+            var candidate = NormalizeApiServerCommandCandidate(buffer.ToString());
+            if (!ApiServerStartCommand.StartsWith(candidate, StringComparison.OrdinalIgnoreCase))
             {
-                pendingFlush.Append(candidate);
+                pendingFlush.Append(buffer);
                 buffer.Clear();
             }
         }
@@ -300,6 +300,14 @@ public class TerminalHub : Hub
         }
 
         return true;
+    }
+
+    private static string NormalizeApiServerCommandCandidate(string value)
+    {
+        return value
+            .Replace("\u001b[200~", string.Empty, StringComparison.Ordinal)
+            .Replace("\u001b[201~", string.Empty, StringComparison.Ordinal)
+            .Trim();
     }
 
     private async Task StartApiServerSessionAsync(Guid userId, TerminalSession terminalSession)

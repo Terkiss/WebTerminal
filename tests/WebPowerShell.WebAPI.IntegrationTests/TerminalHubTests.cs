@@ -242,4 +242,47 @@ public class TerminalHubTests : IClassFixture<TestWebApplicationFactory>
             await connection.StopAsync();
         }
     }
+
+    [Fact]
+    public async Task ApiServerStart_BracketedPaste_ShouldCreateProviderModeSession()
+    {
+        var tabId = Guid.NewGuid();
+        var connection = await CreateAuthenticatedConnectionAsync("provider-terminal-paste-admin", "CorrectPassword123!", isAdmin: true);
+        var output = new StringBuilder();
+        var outputReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        connection.On<Guid, byte[]>("TerminalOutput", (receivedTabId, chunk) =>
+        {
+            if (receivedTabId != tabId)
+            {
+                return;
+            }
+
+            var text = Encoding.UTF8.GetString(chunk);
+            output.Append(text);
+            if (output.ToString().Contains("OPENAI_API_KEY=wta_", StringComparison.Ordinal))
+            {
+                outputReceived.TrySetResult();
+            }
+        });
+
+        try
+        {
+            var openResult = await connection.InvokeAsync<HubResponse>("CreateSession", tabId);
+            Assert.True(openResult.Success, $"CreateSession failed: {openResult.ErrorCode}");
+
+            var command = Encoding.UTF8.GetBytes("\u001b[200~apiServerStart\u001b[201~\r");
+            var sendResult = await connection.InvokeAsync<HubResponse>("SendInput", tabId, Convert.ToBase64String(command));
+            Assert.True(sendResult.Success, $"SendInput failed: {sendResult.ErrorCode}");
+
+            await outputReceived.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var renderedOutput = output.ToString();
+            Assert.Contains("API Provider Mode enabled", renderedOutput);
+            Assert.Contains("OPENAI_MODEL=agy", renderedOutput);
+        }
+        finally
+        {
+            await connection.StopAsync();
+        }
+    }
 }
