@@ -22,8 +22,14 @@ public class TerminalHub : Hub
     private readonly IHubContext<TerminalHub> _hubContext;
     private readonly MemoryPersistenceService _persistenceService;
     private readonly ProviderSessionRegistry _providerSessionRegistry;
-    private static readonly ConcurrentDictionary<Guid, StringBuilder> ApiServerCommandBuffers = new();
+    private static readonly ConcurrentDictionary<Guid, ApiServerLineState> ApiServerCommandBuffers = new();
     private const string ApiServerStartCommand = "apiServerStart";
+
+    private sealed class ApiServerLineState
+    {
+        public StringBuilder Buffer { get; } = new();
+        public int ForwardedChars { get; set; }
+    }
 
     public TerminalHub(
         ILogger<TerminalHub> logger,
@@ -73,15 +79,15 @@ public class TerminalHub : Hub
         if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
         // Launch powershell.exe natively. ConPTY will automatically translate output to UTF-8.
-        var username = Context.User.Identity?.Name ?? "unknown";
-        var isAdmin = Context.User.IsInRole("Admin");
+        var username = Context.User?.Identity?.Name ?? "unknown";
+        var isAdmin = Context.User?.IsInRole("Admin") == true;
         var baseDir = AppDomain.CurrentDomain.BaseDirectory;
         var initScript = System.IO.Path.Combine(baseDir, "init.ps1");
         var homeDir = System.IO.Path.GetFullPath(System.IO.Path.Combine(Environment.CurrentDirectory, "home", username));
 
         if (!System.IO.Directory.Exists(homeDir)) System.IO.Directory.CreateDirectory(homeDir);
 
-        var args = $"-NoLogo -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"";
+        var args = $"-NoLogo -NoProfile -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"";
         if (isAdmin) args += " -IsAdmin";
 
         var options = new TerminalLaunchOptions(
@@ -215,6 +221,8 @@ public class TerminalHub : Hub
         var session = result.Value!;
         if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
 
+        ApiServerCommandBuffers.TryRemove(tabId, out _);
+
         var closeResult = await _sessionManager.CloseSessionAsync(tabId);
         if (!closeResult.IsSuccess) return HubResponse.Fail(closeResult.Failure!);
 
@@ -238,19 +246,64 @@ public class TerminalHub : Hub
             return true;
         }
 
-        var buffer = ApiServerCommandBuffers.GetOrAdd(session.SessionId, _ => new StringBuilder());
+        var state = ApiServerCommandBuffers.GetOrAdd(session.SessionId, _ => new ApiServerLineState());
+
+        // Fast-path: no newline in this input chunk -> forward immediately with zero hold/delay
+        if (text.IndexOfAny(['\r', '\n']) < 0)
+        {
+            lock (state)
+            {
+                foreach (var ch in text)
+                {
+                    if (ch is '\u0003' or '\u0015')
+                    {
+                        state.Buffer.Clear();
+                        state.ForwardedChars = 0;
+                        continue;
+                    }
+
+                    if (ch is '\b' or '\u007f')
+                    {
+                        if (state.Buffer.Length > 0) state.Buffer.Length--;
+                        if (state.ForwardedChars > 0) state.ForwardedChars--;
+                        continue;
+                    }
+
+                    state.Buffer.Append(ch);
+                    state.ForwardedChars++;
+                }
+            }
+
+            await session.SendInputAsync(input);
+            return true;
+        }
+
         var pendingFlush = new StringBuilder();
 
         foreach (var ch in text)
         {
             if (ch is '\r' or '\n')
             {
-                var command = NormalizeApiServerCommandCandidate(buffer.ToString());
-                buffer.Clear();
+                string command;
+                int forwardedChars;
+                lock (state)
+                {
+                    command = NormalizeApiServerCommandCandidate(state.Buffer.ToString());
+                    forwardedChars = state.ForwardedChars;
+                    state.Buffer.Clear();
+                    state.ForwardedChars = 0;
+                }
 
                 if (string.Equals(command, ApiServerStartCommand, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!Context.User.IsInRole("Admin"))
+                    pendingFlush.Clear();
+
+                    if (forwardedChars > 0)
+                    {
+                        await session.SendInputAsync(Encoding.UTF8.GetBytes(new string('\b', forwardedChars)));
+                    }
+
+                    if (Context.User?.IsInRole("Admin") != true)
                     {
                         await session.EmitSystemOutputAsync("\r\n[WebTerminal] apiServerStart requires an administrator account.\r\n");
                         continue;
@@ -260,9 +313,16 @@ public class TerminalHub : Hub
                     continue;
                 }
 
-                if (command.Length > 0)
+                pendingFlush.Append(ch);
+                continue;
+            }
+
+            if (ch is '\u0003' or '\u0015')
+            {
+                lock (state)
                 {
-                    pendingFlush.Append(command);
+                    state.Buffer.Clear();
+                    state.ForwardedChars = 0;
                 }
 
                 pendingFlush.Append(ch);
@@ -271,24 +331,22 @@ public class TerminalHub : Hub
 
             if (ch is '\b' or '\u007f')
             {
-                if (buffer.Length > 0)
+                lock (state)
                 {
-                    buffer.Length--;
-                }
-                else
-                {
-                    pendingFlush.Append(ch);
+                    if (state.Buffer.Length > 0) state.Buffer.Length--;
+                    if (state.ForwardedChars > 0) state.ForwardedChars--;
                 }
 
+                pendingFlush.Append(ch);
                 continue;
             }
 
-            buffer.Append(ch);
-            if (!IsApiServerCommandCandidatePrefix(buffer.ToString()))
+            lock (state)
             {
-                pendingFlush.Append(buffer);
-                buffer.Clear();
+                state.Buffer.Append(ch);
             }
+
+            pendingFlush.Append(ch);
         }
 
         if (pendingFlush.Length > 0)
@@ -296,51 +354,7 @@ public class TerminalHub : Hub
             await session.SendInputAsync(Encoding.UTF8.GetBytes(pendingFlush.ToString()));
         }
 
-        if (buffer.Length == 0 && pendingFlush.Length == 0)
-        {
-            return true;
-        }
-
         return true;
-    }
-
-    private static bool IsApiServerCommandCandidatePrefix(string rawValue)
-    {
-        if (string.IsNullOrEmpty(rawValue))
-        {
-            return true;
-        }
-
-        if (BracketedPasteStart.StartsWith(rawValue, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        var working = rawValue;
-        if (working.StartsWith(BracketedPasteStart, StringComparison.Ordinal))
-        {
-            working = working[BracketedPasteStart.Length..];
-        }
-
-        if (working.EndsWith(BracketedPasteEnd, StringComparison.Ordinal))
-        {
-            working = working[..^BracketedPasteEnd.Length];
-        }
-        else
-        {
-            for (var prefixLen = BracketedPasteEnd.Length - 1; prefixLen >= 1; prefixLen--)
-            {
-                var partialEnd = BracketedPasteEnd[..prefixLen];
-                if (working.EndsWith(partialEnd, StringComparison.Ordinal))
-                {
-                    working = working[..^prefixLen];
-                    break;
-                }
-            }
-        }
-
-        var candidate = working.Trim();
-        return ApiServerStartCommand.StartsWith(candidate, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeApiServerCommandCandidate(string value)
@@ -429,15 +443,15 @@ OPENAI_MODEL=agy
             return HubResponse.Fail(AppFailure.Unauthorized);
         }
 
-        var username = Context.User.Identity?.Name ?? "unknown";
-        var isAdmin = Context.User.IsInRole("Admin");
+        var username = Context.User?.Identity?.Name ?? "unknown";
+        var isAdmin = Context.User?.IsInRole("Admin") == true;
         var baseDir = AppDomain.CurrentDomain.BaseDirectory;
         var initScript = System.IO.Path.Combine(baseDir, "init.ps1");
         var homeDir = System.IO.Path.GetFullPath(System.IO.Path.Combine(Environment.CurrentDirectory, "home", username));
 
         if (!System.IO.Directory.Exists(homeDir)) System.IO.Directory.CreateDirectory(homeDir);
 
-        var args = $"-NoLogo -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"";
+        var args = $"-NoLogo -NoProfile -NoExit -ExecutionPolicy Bypass -File \"{initScript}\" \"{homeDir}\"";
         if (isAdmin) args += " -IsAdmin";
 
         var options = new TerminalLaunchOptions(

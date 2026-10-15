@@ -23,6 +23,8 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
         private readonly ReaderWriterLockSlim _lock = new();
         private readonly ILogger<TeruTeruPandasUserRepository>? _logger;
         private DataFrame _users;
+        private readonly System.Collections.Generic.Dictionary<Guid, User> _byIdCache = new();
+        private readonly System.Collections.Generic.Dictionary<string, User> _byUsernameCache = new(StringComparer.OrdinalIgnoreCase);
         private volatile bool _isDirty;
 
         /// <summary>
@@ -61,14 +63,9 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
             _lock.EnterReadLock();
             try
             {
-                string idStr = id.ToString();
-                for (int i = 0; i < _users.RowCount; i++)
+                if (_byIdCache.TryGetValue(id, out var cached))
                 {
-                    var val = _users[i, COL_ID]?.ToString();
-                    if (string.Equals(val, idStr, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return Task.FromResult(Result<User>.Success(RowToUser(i)));
-                    }
+                    return Task.FromResult(Result<User>.Success(CloneUser(cached)));
                 }
                 return Task.FromResult(Result<User>.Fail(AppFailure.Unauthorized));
             }
@@ -87,13 +84,9 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
             _lock.EnterReadLock();
             try
             {
-                for (int i = 0; i < _users.RowCount; i++)
+                if (!string.IsNullOrEmpty(username) && _byUsernameCache.TryGetValue(username, out var cached))
                 {
-                    var val = _users[i, COL_USERNAME]?.ToString();
-                    if (string.Equals(val, username, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return Task.FromResult(Result<User>.Success(RowToUser(i)));
-                    }
+                    return Task.FromResult(Result<User>.Success(CloneUser(cached)));
                 }
                 return Task.FromResult(Result<User>.Fail(AppFailure.Unauthorized));
             }
@@ -145,7 +138,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                     int oldCount = _users.RowCount;
                     int newCount = oldCount + 1;
 
-                    var newColumns = new Dictionary<string, IColumn>();
+                    var newColumns = new System.Collections.Generic.Dictionary<string, IColumn>();
                     foreach (var colName in AllColumns)
                     {
                         var values = new string?[newCount];
@@ -176,6 +169,16 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                     _users = new DataFrame(newColumns);
                 }
 
+                if (_byIdCache.TryGetValue(user.Id, out var previous) &&
+                    !string.Equals(previous.Username, user.Username, StringComparison.OrdinalIgnoreCase))
+                {
+                    _byUsernameCache.Remove(previous.Username);
+                }
+
+                var snapshot = CloneUser(user);
+                _byIdCache[user.Id] = snapshot;
+                _byUsernameCache[user.Username] = snapshot;
+
                 _isDirty = true;
                 return Task.FromResult(Result<bool>.Success(true));
             }
@@ -194,13 +197,10 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
             _lock.EnterReadLock();
             try
             {
-                var list = new System.Collections.Generic.List<User>();
-                for (int i = 0; i < _users.RowCount; i++)
+                var list = new System.Collections.Generic.List<User>(_byIdCache.Count);
+                foreach (var user in _byIdCache.Values)
                 {
-                    if (_users[i, COL_ID]?.ToString() != "__SENTINEL__")
-                    {
-                        list.Add(RowToUser(i));
-                    }
+                    list.Add(CloneUser(user));
                 }
                 return Task.FromResult(Result<System.Collections.Generic.IEnumerable<User>>.Success(list));
             }
@@ -254,6 +254,10 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                 }
 
                 _users = new DataFrame(newColumns);
+                if (_byIdCache.Remove(id, out var removed))
+                {
+                    _byUsernameCache.Remove(removed.Username);
+                }
                 _isDirty = true;
                 return Task.FromResult(Result<bool>.Success(true));
             }
@@ -264,6 +268,40 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
             finally
             {
                 _lock.ExitWriteLock();
+            }
+        }
+
+        private static User CloneUser(User src)
+        {
+            return new User
+            {
+                Id                     = src.Id,
+                Username               = src.Username,
+                PasswordHash           = src.PasswordHash,
+                LastPasswordChangeDate = src.LastPasswordChangeDate,
+                IsActive               = src.IsActive,
+                CreatedAt              = src.CreatedAt,
+                UpdatedAt              = src.UpdatedAt,
+                FailedLoginCount       = src.FailedLoginCount,
+                LockedUntil            = src.LockedUntil,
+                IsAdmin                = src.IsAdmin,
+                Preferences            = src.Preferences,
+            };
+        }
+
+        private void RebuildCacheFromDataFrame()
+        {
+            _byIdCache.Clear();
+            _byUsernameCache.Clear();
+            for (int i = 0; i < _users.RowCount; i++)
+            {
+                if (_users[i, COL_ID]?.ToString() == "__SENTINEL__")
+                {
+                    continue;
+                }
+                var user = RowToUser(i);
+                _byIdCache[user.Id] = user;
+                _byUsernameCache[user.Username] = user;
             }
         }
 
@@ -416,6 +454,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                         }
                     }
                     _users = new DataFrame(columns);
+                    RebuildCacheFromDataFrame();
                     _isDirty = false;
                     _logger?.LogInformation("[MemoryPersistence] Loaded {Count} users from {Path}", loaded.RowCount, dbPath);
                 }

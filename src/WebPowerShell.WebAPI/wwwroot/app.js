@@ -284,6 +284,7 @@ async function restorePersistedSessions() {
         showToast(`Found ${total} existing session(s). Reconnecting...`, 'info', 3000);
         
         let firstTabId = null;
+        const restoreTasks = [];
         for (let i = 0; i < sessions.length; i++) {
             const s = sessions[i];
             const tabId = s.sessionId;
@@ -297,37 +298,38 @@ async function restorePersistedSessions() {
             state.tabs.set(tabId, tab);
             tab.initializeDOM();
             
-            if (!firstTabId) firstTabId = tabId;
-            
-            try {
-                // Activate tab so xterm.open() is called before output arrives
-                switchTab(tabId);
-                
-                if (s.isLive) {
-                    // Session is live on the server (e.g., created from another device)
-                    // Just attach to the existing process
-                    const response = await state.connection.invoke("AttachSession", tabId);
-                    if (response && response.success === false) {
-                        tab.writeOrBuffer(`\r\n\x1b[31m[Attach failed: ${response.errorMessage || 'Unknown'}]\x1b[0m\r\n`);
-                    } else {
-                        tab.writeOrBuffer(`\x1b[32m[Live session attached — ${s.workingDirectory}]\x1b[0m\r\n`);
-                    }
-                } else {
-                    // Session is persisted from a previous server run — create new process at saved directory
-                    const response = await state.connection.invoke("RestoreSession", tabId, s.workingDirectory);
-                    if (response && response.success === false) {
-                        tab.writeOrBuffer(`\r\n\x1b[31m[Restore failed: ${response.errorMessage || 'Unknown'}]\x1b[0m\r\n`);
-                    } else {
-                        tab.writeOrBuffer(`\x1b[36m[Session restored — ${s.workingDirectory}]\x1b[0m\r\n`);
-                    }
-                }
-            } catch (e) {
-                console.error(`Failed to connect session ${tabId}:`, e);
-                tab.writeOrBuffer(`\r\n\x1b[31m[Connection failed: ${e.message}]\x1b[0m\r\n`);
+            if (!firstTabId) {
+                firstTabId = tabId;
+                switchTab(firstTabId);
             }
+            
+            restoreTasks.push((async () => {
+                try {
+                    if (s.isLive) {
+                        const response = await state.connection.invoke("AttachSession", tabId);
+                        if (response && response.success === false) {
+                            tab.writeOrBuffer(`\r\n\x1b[31m[Attach failed: ${response.errorMessage || 'Unknown'}]\x1b[0m\r\n`);
+                        } else {
+                            tab.writeOrBuffer(`\x1b[32m[Live session attached — ${s.workingDirectory}]\x1b[0m\r\n`);
+                        }
+                    } else {
+                        const response = await state.connection.invoke("RestoreSession", tabId, s.workingDirectory);
+                        if (response && response.success === false) {
+                            tab.writeOrBuffer(`\r\n\x1b[31m[Restore failed: ${response.errorMessage || 'Unknown'}]\x1b[0m\r\n`);
+                        } else {
+                            tab.writeOrBuffer(`\x1b[36m[Session restored — ${s.workingDirectory}]\x1b[0m\r\n`);
+                        }
+                    }
+                } catch (e) {
+                    console.error(`Failed to connect session ${tabId}:`, e);
+                    tab.writeOrBuffer(`\r\n\x1b[31m[Connection failed: ${e.message}]\x1b[0m\r\n`);
+                }
+            })());
         }
         
-        // Switch to the first tab
+        await Promise.all(restoreTasks);
+        
+        // Ensure the first tab is active
         if (firstTabId) {
             switchTab(firstTabId);
         }
@@ -378,6 +380,8 @@ class Tab {
         this.suspendedWriteBytes = 0;
         this.writeQueue = [];
         this.writeFlushTimer = null;
+        this.inputBuffer = '';
+        this.isSendingInput = false;
         this.encoder = new TextEncoder();
         this.decoder = new TextDecoder();
     }
@@ -474,22 +478,37 @@ class Tab {
     }
 
     async sendInput(data) {
-        if (state.isPageSuspended) {
+        if (state.isPageSuspended || !data) {
             return;
         }
         if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
             return;
         }
+        this.inputBuffer += data;
+        if (this.isSendingInput) {
+            return;
+        }
+        this.isSendingInput = true;
         try {
-            const payload = this.encoder.encode(data);
-            let binary = '';
-            for (let i = 0; i < payload.length; i++) {
-                binary += String.fromCharCode(payload[i]);
+            while (this.inputBuffer.length > 0) {
+                if (state.isPageSuspended || !state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
+                    this.inputBuffer = '';
+                    break;
+                }
+                const chunk = this.inputBuffer;
+                this.inputBuffer = '';
+                const payload = this.encoder.encode(chunk);
+                let binary = '';
+                for (let i = 0; i < payload.length; i++) {
+                    binary += String.fromCharCode(payload[i]);
+                }
+                const base64 = window.btoa(binary);
+                await state.connection.invoke("SendInput", this.id, base64);
             }
-            const base64 = window.btoa(binary);
-            await state.connection.invoke("SendInput", this.id, base64);
         } catch (e) {
             console.error("Failed to send input:", e);
+        } finally {
+            this.isSendingInput = false;
         }
     }
 
@@ -523,6 +542,15 @@ class Tab {
 
     enqueueWrite(output) {
         if (!output || !this.terminal) return;
+
+        if (this.writeFlushTimer === null && this.writeQueue.length === 0) {
+            this.terminal.write(output);
+            this.writeFlushTimer = setTimeout(() => {
+                this.writeFlushTimer = null;
+                this.flushWriteQueue();
+            }, TERMINAL_WRITE_FLUSH_MS);
+            return;
+        }
 
         this.writeQueue.push(output);
         if (this.writeFlushTimer !== null) {

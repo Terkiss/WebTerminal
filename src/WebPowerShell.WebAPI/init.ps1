@@ -43,14 +43,16 @@ Set-Alias -Name chdir -Value Set-Location-Safe -Option AllScope -Force
 Set-Alias -Name sl -Value Set-Location-Safe -Option AllScope -Force
 Set-Alias -Name Set-Location -Value Set-Location-Safe -Option AllScope -Force
 
-# Clear screen for cleaner startup
-Clear-Host
-Write-Host "Welcome to WebTerminal!" -ForegroundColor Cyan
-Write-Host "Home Directory: $global:HomeDir" -ForegroundColor Gray
+$script:Esc = [char]27
+$script:PromptUser = if ($IsAdmin) { "root" } else { Split-Path -Leaf $global:HomeDir }
+$script:PromptSymbol = if ($IsAdmin) { "# " } else { "$ " }
 
-# Custom Linux-style prompt
+# Fast ANSI screen clear and welcome banner
+[Console]::Write("${script:Esc}[2J${script:Esc}[H${script:Esc}[36mWelcome to WebTerminal!${script:Esc}[0m`r`n${script:Esc}[90mHome Directory: $global:HomeDir${script:Esc}[0m`r`n")
+
+# Custom Linux-style prompt (single string allocation, zero Write-Host overhead)
 function prompt {
-    $currentPath = (Get-Location).Path
+    $currentPath = $ExecutionContext.SessionState.Path.CurrentLocation.Path
     $displayPath = $currentPath
     
     # Replace home directory path with ~ and fix slashes
@@ -62,11 +64,5 @@ function prompt {
         }
     }
     
-    $username = if ($IsAdmin) { "root" } else { Split-Path -Leaf $global:HomeDir }
-    $promptSymbol = if ($IsAdmin) { "# " } else { "$ " }
-
-    Write-Host "${username}@webterminal" -NoNewline -ForegroundColor Green
-    Write-Host ":" -NoNewline
-    Write-Host $displayPath -NoNewline -ForegroundColor Blue
-    return $promptSymbol
+    return "${script:Esc}[32m${script:PromptUser}@webterminal${script:Esc}[0m:${script:Esc}[34m${displayPath}${script:Esc}[0m${script:PromptSymbol}"
 }

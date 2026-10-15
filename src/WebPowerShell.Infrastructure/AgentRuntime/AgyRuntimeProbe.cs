@@ -6,6 +6,7 @@ namespace WebPowerShell.Infrastructure.AgentRuntime;
 public sealed class AgyRuntimeProbe
 {
     private readonly ILogger<AgyRuntimeProbe> _logger;
+    private string? _cachedExecutablePath;
 
     public AgyRuntimeProbe(ILogger<AgyRuntimeProbe> logger)
     {
@@ -14,6 +15,12 @@ public sealed class AgyRuntimeProbe
 
     public async Task<AgyRuntimeProbeResult> ProbeAsync(CancellationToken cancellationToken = default)
     {
+        var cached = _cachedExecutablePath;
+        if (!string.IsNullOrEmpty(cached) && File.Exists(cached))
+        {
+            return new AgyRuntimeProbeResult(true, cached, null);
+        }
+
         var executable = OperatingSystem.IsWindows() ? "agy.cmd" : "agy";
         var path = await TryResolveExecutableAsync(executable, cancellationToken);
         if (path == null && OperatingSystem.IsWindows())
@@ -26,6 +33,7 @@ public sealed class AgyRuntimeProbe
             return new AgyRuntimeProbeResult(false, null, "AGY executable was not found on PATH.");
         }
 
+        _cachedExecutablePath = path;
         return new AgyRuntimeProbeResult(true, path, null);
     }
 
