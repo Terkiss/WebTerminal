@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace WebPowerShell.Application.Services
 {
@@ -19,15 +21,72 @@ namespace WebPowerShell.Application.Services
         private readonly string _basePath;
 
         public FileManagerService()
+            : this(Path.Combine(Environment.CurrentDirectory, "home"))
         {
-            // Set base directory to the user's home directory
-            _basePath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+
+        public FileManagerService(string basePath)
+        {
+            _basePath = Path.GetFullPath(basePath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!Directory.Exists(_basePath))
+            {
+                Directory.CreateDirectory(_basePath);
+            }
+        }
+
+        public string GetUserHomePath(string? username)
+        {
+            if (string.IsNullOrWhiteSpace(username))
+            {
+                return _basePath;
+            }
+
+            var safeUser = Path.GetFileName(username.Trim());
+            if (string.IsNullOrWhiteSpace(safeUser) || safeUser == "." || safeUser == "..")
+            {
+                throw new UnauthorizedAccessException("Invalid username for home path.");
+            }
+
+            var userHome = Path.GetFullPath(Path.Combine(_basePath, safeUser));
+            if (!Directory.Exists(userHome))
+            {
+                Directory.CreateDirectory(userHome);
+            }
+
+            return userHome;
+        }
+
+        private static void EnsureNoReparsePoints(string fullPath, string basePath)
+        {
+            var current = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var normalizedBase = basePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+            while (!string.IsNullOrEmpty(current) &&
+                   current.StartsWith(normalizedBase, StringComparison.OrdinalIgnoreCase))
+            {
+                if (File.Exists(current) || Directory.Exists(current))
+                {
+                    var attributes = File.GetAttributes(current);
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    {
+                        throw new UnauthorizedAccessException("Reparse points (symbolic links or junctions) are not allowed.");
+                    }
+                }
+
+                if (string.Equals(current, normalizedBase, StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+
+                current = Path.GetDirectoryName(current);
+            }
         }
 
         private string GetSafePath(string relativePath)
         {
             if (string.IsNullOrEmpty(relativePath) || relativePath == "/")
             {
+                EnsureNoReparsePoints(_basePath, _basePath);
                 return _basePath;
             }
 
@@ -44,6 +103,14 @@ namespace WebPowerShell.Application.Services
 
             var combined = Path.Combine(_basePath, relativePath);
             var fullPath = Path.GetFullPath(combined);
+
+            if (!fullPath.StartsWith(basePathWithSeparator, StringComparison.OrdinalIgnoreCase) && 
+                !fullPath.Equals(_basePath, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new UnauthorizedAccessException("Path Traversal detected.");
+            }
+
+            EnsureNoReparsePoints(fullPath, _basePath);
 
             try
             {
@@ -95,6 +162,7 @@ namespace WebPowerShell.Application.Services
                 // Add directories
                 foreach (var dir in dirInfo.GetDirectories())
                 {
+                    if ((dir.Attributes & FileAttributes.ReparsePoint) != 0) continue;
                     items.Add(new FileItemDto
                     {
                         Name = dir.Name,
@@ -108,6 +176,7 @@ namespace WebPowerShell.Application.Services
                 // Add files
                 foreach (var file in dirInfo.GetFiles())
                 {
+                    if ((file.Attributes & FileAttributes.ReparsePoint) != 0) continue;
                     items.Add(new FileItemDto
                     {
                         Name = file.Name,
@@ -154,7 +223,7 @@ namespace WebPowerShell.Application.Services
             return targetPath;
         }
 
-        public void SaveFile(string relativeDirectory, string fileName, Stream contentStream)
+        private string PrepareSafeTargetFile(string relativeDirectory, string fileName)
         {
             var targetDir = GetSafePath(relativeDirectory);
             if (!Directory.Exists(targetDir))
@@ -162,14 +231,27 @@ namespace WebPowerShell.Application.Services
                 Directory.CreateDirectory(targetDir);
             }
 
+            EnsureNoReparsePoints(targetDir, _basePath);
+
             var sanitizedFileName = Path.GetFileName(fileName);
-            if (string.IsNullOrEmpty(sanitizedFileName))
+            if (string.IsNullOrEmpty(sanitizedFileName) || sanitizedFileName == "." || sanitizedFileName == "..")
             {
                 throw new ArgumentException("Invalid file name.");
             }
 
             var targetFile = Path.Combine(targetDir, sanitizedFileName);
             var safeTargetFile = Path.GetFullPath(targetFile);
+
+            string basePathWithSeparator = _basePath.EndsWith(Path.DirectorySeparatorChar.ToString()) 
+                ? _basePath 
+                : _basePath + Path.DirectorySeparatorChar;
+
+            if (!safeTargetFile.StartsWith(basePathWithSeparator, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new UnauthorizedAccessException("Path Traversal detected.");
+            }
+
+            EnsureNoReparsePoints(safeTargetFile, _basePath);
 
             try
             {
@@ -181,19 +263,28 @@ namespace WebPowerShell.Application.Services
             }
             catch {}
 
-            string basePathWithSeparator = _basePath.EndsWith(Path.DirectorySeparatorChar.ToString()) 
-                ? _basePath 
-                : _basePath + Path.DirectorySeparatorChar;
-
             if (!safeTargetFile.StartsWith(basePathWithSeparator, StringComparison.OrdinalIgnoreCase))
             {
                 throw new UnauthorizedAccessException("Path Traversal detected.");
             }
 
-            using (var fs = new FileStream(safeTargetFile, FileMode.Create, FileAccess.Write))
+            return safeTargetFile;
+        }
+
+        public void SaveFile(string relativeDirectory, string fileName, Stream contentStream)
+        {
+            var safeTargetFile = PrepareSafeTargetFile(relativeDirectory, fileName);
+            using (var fs = new FileStream(safeTargetFile, FileMode.Create, FileAccess.Write, FileShare.None))
             {
                 contentStream.CopyTo(fs);
             }
+        }
+
+        public async Task SaveFileAsync(string relativeDirectory, string fileName, Stream contentStream, CancellationToken cancellationToken = default)
+        {
+            var safeTargetFile = PrepareSafeTargetFile(relativeDirectory, fileName);
+            await using var fs = new FileStream(safeTargetFile, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 81920, useAsync: true);
+            await contentStream.CopyToAsync(fs, cancellationToken);
         }
     }
 }

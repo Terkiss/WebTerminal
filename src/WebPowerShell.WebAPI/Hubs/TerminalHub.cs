@@ -125,7 +125,7 @@ public class TerminalHub : Hub
         return HubResponse.Ok();
     }
 
-    public async Task<HubResponse> AttachSession(Guid tabId)
+    public async Task<HubResponse> AttachSession(Guid tabId, bool replayScrollback = true)
     {
         if (!TryGetUserId(out var userId)) return HubResponse.Fail(AppFailure.Unauthorized);
 
@@ -137,17 +137,20 @@ public class TerminalHub : Hub
 
         session.Attach(Context.ConnectionId);
 
-        // Replay scrollback buffer to the newly attached client so they see previous output
-        var scrollback = session.GetScrollbackSnapshot();
-        if (scrollback.Length > 0)
+        if (replayScrollback)
         {
-            try
+            // Replay scrollback buffer to the newly attached client so they see previous output
+            var scrollback = session.GetScrollbackSnapshot();
+            if (scrollback.Length > 0)
             {
-                await Clients.Caller.SendAsync("TerminalOutput", tabId, scrollback);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to send scrollback to client");
+                try
+                {
+                    await Clients.Caller.SendAsync("TerminalOutput", tabId, scrollback);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to send scrollback to client");
+                }
             }
         }
 
@@ -222,6 +225,7 @@ public class TerminalHub : Hub
         if (session.OwnerUserId != userId) return HubResponse.Fail(AppFailure.Unauthorized);
 
         ApiServerCommandBuffers.TryRemove(tabId, out _);
+        _persistenceService.RemovePersistedSession(tabId);
 
         var closeResult = await _sessionManager.CloseSessionAsync(tabId);
         if (!closeResult.IsSuccess) return HubResponse.Fail(closeResult.Failure!);
@@ -387,7 +391,7 @@ OPENAI_MODEL=agy
 
 """;
 
-        await terminalSession.EmitSystemOutputAsync(message.Replace("\n", "\r\n"));
+        await terminalSession.EmitSystemOutputAsync(message.Replace("\n", "\r\n"), recordInScrollback: false);
     }
 
     private string GetOrigin()
@@ -520,6 +524,7 @@ OPENAI_MODEL=agy
 
         session.OnExited = async (int? exitCode) =>
         {
+            ApiServerCommandBuffers.TryRemove(tabId, out _);
             var connections = session.ConnectionIds;
             if (connections.Count == 0) return;
             try

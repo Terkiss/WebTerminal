@@ -107,6 +107,17 @@ async function checkInitialAuth() {
             // Try to extract username or fallback
             // In a real app we might have a user endpoint, but here we can just show the app
             showAppView();
+        } else if (response.status === 403) {
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (err) {}
+            const code = data?.errorCode || data?.ErrorCode || data?.code || '';
+            if (code === 'Auth.PasswordExpired' || code === 'PasswordExpired') {
+                showAppView({ connect: false, requirePasswordChange: true });
+            } else {
+                showLoginView();
+            }
         } else {
             showLoginView();
         }
@@ -242,7 +253,7 @@ function initSignalR() {
         showToast('Session connection terminated.', 'error');
         // Retry connection manually after 10s
         setTimeout(() => {
-            if (document.getElementById('loginOverlay').classList.contains('hidden')) {
+            if (!document.getElementById('loginOverlay').classList.contains('active')) {
                 startConnection();
             }
         }, 10000);
@@ -357,7 +368,7 @@ function updateConnectionBadge(status, text) {
 async function syncActiveSessions() {
     for (const [tabId, tab] of state.tabs.entries()) {
         try {
-            await state.connection.invoke("AttachSession", tabId);
+            await state.connection.invoke("AttachSession", tabId, false);
             tab.writeOrBuffer("\r\n\x1b[33m[Connection Restored]\x1b[0m\r\n");
         } catch (e) {
             console.error(`Failed to sync tab ${tabId}:`, e);
@@ -602,12 +613,12 @@ class Tab {
         }
     }
 
-    async attachIfConnected() {
+    async attachIfConnected(replayScrollback = true) {
         if (!state.connection || state.connection.state !== signalR.HubConnectionState.Connected) {
             return false;
         }
         try {
-            await state.connection.invoke("AttachSession", this.id);
+            await state.connection.invoke("AttachSession", this.id, replayScrollback);
             return true;
         } catch (e) {
             console.error(`Failed to attach session ${this.id}:`, e);
@@ -906,8 +917,9 @@ async function resumeVisiblePage() {
         tab.setSuspended(false, false);
     }
     for (const tab of state.tabs.values()) {
-        const attached = await tab.attachIfConnected();
-        if (attached) {
+        const shouldReplayScrollback = !tab.isOpened;
+        const attached = await tab.attachIfConnected(shouldReplayScrollback);
+        if (attached && shouldReplayScrollback) {
             tab.clearReplayableSuspendedWrites();
             tab.flushPendingWrites();
         } else {
@@ -1555,19 +1567,49 @@ document.addEventListener('DOMContentLoaded', () => {
             items.forEach(item => {
                 const tr = document.createElement('tr');
                 tr.className = 'file-item-row';
-                const icon = item.isDirectory ? '<i class="fa-solid fa-folder file-icon folder"></i>' : '<i class="fa-solid fa-file file-icon file"></i>';
                 const size = item.isDirectory ? '--' : this.formatSize(item.size);
                 const date = new Date(item.lastModified).toLocaleDateString();
 
-                tr.innerHTML = `
-                    <td>${icon} <span class="file-name">${item.name}</span></td>
-                    <td>${size}</td>
-                    <td>${date}</td>
-                    <td>
-                        ${!item.isDirectory ? `<button class="file-action-btn" title="Download" onclick="fm_download('${item.path}')"><i class="fa-solid fa-download"></i></button>` : ''}
-                        <button class="file-action-btn delete" title="Delete" onclick="fm_delete('${item.path}', ${item.isDirectory})"><i class="fa-solid fa-trash-can"></i></button>
-                    </td>
-                `;
+                const nameTd = document.createElement('td');
+                const iconEl = document.createElement('i');
+                iconEl.className = item.isDirectory
+                    ? 'fa-solid fa-folder file-icon folder'
+                    : 'fa-solid fa-file file-icon file';
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'file-name';
+                nameSpan.textContent = item.name;
+                nameTd.appendChild(iconEl);
+                nameTd.appendChild(document.createTextNode(' '));
+                nameTd.appendChild(nameSpan);
+
+                const sizeTd = document.createElement('td');
+                sizeTd.textContent = size;
+
+                const dateTd = document.createElement('td');
+                dateTd.textContent = date;
+
+                const actionsTd = document.createElement('td');
+                if (!item.isDirectory) {
+                    const downloadBtn = document.createElement('button');
+                    downloadBtn.className = 'file-action-btn';
+                    downloadBtn.title = 'Download';
+                    downloadBtn.innerHTML = '<i class="fa-solid fa-download"></i>';
+                    downloadBtn.addEventListener('click', () => window.fm_download(item.path));
+                    actionsTd.appendChild(downloadBtn);
+                    actionsTd.appendChild(document.createTextNode(' '));
+                }
+
+                const deleteBtn = document.createElement('button');
+                deleteBtn.className = 'file-action-btn delete';
+                deleteBtn.title = 'Delete';
+                deleteBtn.innerHTML = '<i class="fa-solid fa-trash-can"></i>';
+                deleteBtn.addEventListener('click', () => window.fm_delete(item.path, Boolean(item.isDirectory)));
+                actionsTd.appendChild(deleteBtn);
+
+                tr.appendChild(nameTd);
+                tr.appendChild(sizeTd);
+                tr.appendChild(dateTd);
+                tr.appendChild(actionsTd);
 
                 tr.addEventListener('dblclick', () => {
                     if (item.isDirectory) {

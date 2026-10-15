@@ -129,7 +129,24 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
 
             var output = stdout.ToString().Trim();
             var error = stderr.ToString().Trim();
-            UpdateConversationIdFromLog(session, logPath);
+            try
+            {
+                UpdateConversationIdFromLog(session, logPath);
+            }
+            finally
+            {
+                try
+                {
+                    if (File.Exists(logPath))
+                    {
+                        File.Delete(logPath);
+                    }
+                }
+                catch
+                {
+                    // Ignore temporary log cleanup errors
+                }
+            }
 
             if (process.ExitCode != 0)
             {
@@ -149,7 +166,9 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
         catch (OperationCanceledException)
         {
             session.AgyProcessId = null;
-            session.State = ProviderSessionState.Failed;
+            session.State = session.ExpectedToolCallIds.Count > 0
+                ? ProviderSessionState.WaitingForToolResult
+                : ProviderSessionState.WaitingForRequest;
             session.FailureReason = "AGY completion was cancelled.";
             session.UpdatedAt = DateTimeOffset.UtcNow;
             throw;
@@ -206,7 +225,9 @@ public sealed class AgyRuntimeManager : IAgyRuntimeManager
         }
         catch (OperationCanceledException)
         {
-            session.State = ProviderSessionState.Failed;
+            session.State = session.ExpectedToolCallIds.Count > 0
+                ? ProviderSessionState.WaitingForToolResult
+                : ProviderSessionState.WaitingForRequest;
             session.FailureReason = "API provider terminal completion was cancelled or timed out.";
             session.UpdatedAt = DateTimeOffset.UtcNow;
             throw;

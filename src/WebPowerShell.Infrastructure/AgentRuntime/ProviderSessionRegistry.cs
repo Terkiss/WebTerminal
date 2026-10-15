@@ -249,31 +249,36 @@ public sealed class ProviderSessionRegistry
             return AgentRuntimeEventResult.SessionExpired;
         }
 
-        if (!string.IsNullOrWhiteSpace(runtimeEvent.ConversationId))
+        lock (session.StateGate)
         {
-            session.ConversationId = runtimeEvent.ConversationId;
-        }
+            if (!string.IsNullOrWhiteSpace(runtimeEvent.ConversationId))
+            {
+                session.ConversationId = runtimeEvent.ConversationId;
+            }
 
-        if (!string.IsNullOrWhiteSpace(runtimeEvent.TranscriptPath))
-        {
-            session.LastTranscriptPath = runtimeEvent.TranscriptPath;
-        }
+            if (!string.IsNullOrWhiteSpace(runtimeEvent.TranscriptPath))
+            {
+                session.LastTranscriptPath = runtimeEvent.TranscriptPath;
+            }
 
-        session.RecentEvents.Add(runtimeEvent);
-        if (session.RecentEvents.Count > 50)
-        {
-            session.RecentEvents.RemoveRange(0, session.RecentEvents.Count - 50);
-        }
+            session.RecentEvents.Add(runtimeEvent);
+            if (session.RecentEvents.Count > 50)
+            {
+                session.RecentEvents.RemoveRange(0, session.RecentEvents.Count - 50);
+            }
 
-        session.State = runtimeEvent.EventType switch
-        {
-            "conversation.started" when session.State is ProviderSessionState.Created or ProviderSessionState.Starting => ProviderSessionState.Ready,
-            "invocation.completed" when session.State == ProviderSessionState.Generating => ProviderSessionState.WaitingForRequest,
-            "conversation.stopped" => ProviderSessionState.Stopped,
-            "agy.exited" => ProviderSessionState.Stopped,
-            _ => session.State
-        };
-        session.UpdatedAt = now;
+            session.State = runtimeEvent.EventType switch
+            {
+                "conversation.started" when session.State is ProviderSessionState.Created or ProviderSessionState.Starting => ProviderSessionState.Ready,
+                "invocation.completed" when session.State == ProviderSessionState.Generating => ProviderSessionState.WaitingForRequest,
+                "conversation.stopped" => session.ExpectedToolCallIds.Count > 0
+                    ? ProviderSessionState.WaitingForToolResult
+                    : ProviderSessionState.WaitingForRequest,
+                "agy.exited" => ProviderSessionState.Stopped,
+                _ => session.State
+            };
+            session.UpdatedAt = now;
+        }
         if (!session.IsTerminalBacked)
         {
             _sessionStore.Save(session);
@@ -321,6 +326,11 @@ public sealed class ProviderSessionRegistry
 
     private void SweepExpired(DateTimeOffset now)
     {
+        if (_seenEventIds.Count > 10_000)
+        {
+            _seenEventIds.Clear();
+        }
+
         foreach (var session in _sessions.Values)
         {
             if (session.IsExpired(now))

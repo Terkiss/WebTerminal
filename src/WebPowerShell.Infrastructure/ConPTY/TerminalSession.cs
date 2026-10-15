@@ -26,9 +26,9 @@ public sealed class TerminalSession : IAsyncDisposable
     /// </summary>
     private const int MaxScrollbackBytes = 256 * 1024;
     private readonly object _scrollbackLock = new();
-    private byte[] _scrollbackBuffer = new byte[MaxScrollbackBytes];
+    private readonly byte[] _scrollbackBuffer = new byte[MaxScrollbackBytes];
+    private int _scrollbackHead = 0;
     private int _scrollbackLength = 0;
-    private bool _scrollbackWrapped = false;
 
     /// <summary>
     /// All SignalR connection IDs currently attached to this session (multi-device mirroring).
@@ -61,6 +61,20 @@ public sealed class TerminalSession : IAsyncDisposable
             lock (_connectionLock)
             {
                 return _connectionIds.Count > 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns true if at least one API output capture is currently active on this session.
+    /// </summary>
+    public bool HasActiveApiCaptures
+    {
+        get
+        {
+            lock (_apiCaptureLock)
+            {
+                return _apiCaptures.Count > 0;
             }
         }
     }
@@ -163,10 +177,13 @@ public sealed class TerminalSession : IAsyncDisposable
         await _inputChannel.Writer.WriteAsync(input, _cts.Token);
     }
 
-    public async Task EmitSystemOutputAsync(string text)
+    public async Task EmitSystemOutputAsync(string text, bool recordInScrollback = true)
     {
         var data = Encoding.UTF8.GetBytes(text);
-        AppendToScrollback(data);
+        if (recordInScrollback)
+        {
+            AppendToScrollback(data);
+        }
 
         if (OnOutput != null && HasConnections)
         {
@@ -192,10 +209,8 @@ public sealed class TerminalSession : IAsyncDisposable
 
         try
         {
-            var normalized = prompt.EndsWith("\r", StringComparison.Ordinal) ||
-                prompt.EndsWith("\n", StringComparison.Ordinal)
-                    ? prompt
-                    : prompt + "\r";
+            var sanitized = SanitizeApiPrompt(prompt);
+            var normalized = $"{sanitized}\r";
             await SendInputAsync(Encoding.UTF8.GetBytes(normalized));
             return await capture.Task.WaitAsync(timeoutCts.Token);
         }
@@ -208,6 +223,34 @@ public sealed class TerminalSession : IAsyncDisposable
 
             capture.Dispose();
         }
+    }
+
+    private static string SanitizeApiPrompt(string prompt)
+    {
+        if (string.IsNullOrEmpty(prompt))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = prompt.TrimEnd('\r', '\n');
+        var sb = new StringBuilder(trimmed.Length);
+        foreach (var ch in trimmed)
+        {
+            if (ch is '\n' or '\t')
+            {
+                sb.Append(ch);
+                continue;
+            }
+
+            if (char.IsControl(ch) || (ch >= '\u0080' && ch <= '\u009f'))
+            {
+                continue;
+            }
+
+            sb.Append(ch);
+        }
+
+        return sb.ToString();
     }
 
     public async Task ResizeAsync(int columns, int rows)
@@ -239,6 +282,7 @@ public sealed class TerminalSession : IAsyncDisposable
             await foreach (var chunk in Process.ReadOutputAsync(_cts.Token))
             {
                 var data = chunk.ToArray();
+                LastActivityAt = DateTimeOffset.UtcNow;
 
                 // Always capture output to scrollback buffer (even if no clients connected)
                 AppendToScrollback(data);
@@ -279,43 +323,48 @@ public sealed class TerminalSession : IAsyncDisposable
 
         foreach (var capture in captures)
         {
-            capture.Append(data);
+            try
+            {
+                capture.Append(data);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Session {SessionId}: API output capture append failed", SessionId);
+            }
         }
     }
 
     /// <summary>
-    /// Append output data to the circular scrollback buffer.
+    /// Append output data to the O(1) circular scrollback buffer.
     /// </summary>
     private void AppendToScrollback(byte[] data)
     {
+        if (data.Length == 0)
+        {
+            return;
+        }
+
         lock (_scrollbackLock)
         {
             if (data.Length >= MaxScrollbackBytes)
             {
                 // Data is larger than buffer — keep only the last MaxScrollbackBytes
                 Array.Copy(data, data.Length - MaxScrollbackBytes, _scrollbackBuffer, 0, MaxScrollbackBytes);
+                _scrollbackHead = 0;
                 _scrollbackLength = MaxScrollbackBytes;
-                _scrollbackWrapped = true;
                 return;
             }
 
-            var spaceRemaining = MaxScrollbackBytes - _scrollbackLength;
-            if (data.Length <= spaceRemaining)
+            int firstChunk = Math.Min(data.Length, MaxScrollbackBytes - _scrollbackHead);
+            Array.Copy(data, 0, _scrollbackBuffer, _scrollbackHead, firstChunk);
+            int secondChunk = data.Length - firstChunk;
+            if (secondChunk > 0)
             {
-                // Fits in remaining space
-                Array.Copy(data, 0, _scrollbackBuffer, _scrollbackLength, data.Length);
-                _scrollbackLength += data.Length;
+                Array.Copy(data, firstChunk, _scrollbackBuffer, 0, secondChunk);
             }
-            else
-            {
-                // Shift left and append at end (ring-style)
-                var shiftBy = data.Length - spaceRemaining;
-                Array.Copy(_scrollbackBuffer, shiftBy, _scrollbackBuffer, 0, _scrollbackLength - shiftBy);
-                _scrollbackLength -= shiftBy;
-                Array.Copy(data, 0, _scrollbackBuffer, _scrollbackLength, data.Length);
-                _scrollbackLength += data.Length;
-                _scrollbackWrapped = true;
-            }
+
+            _scrollbackHead = (_scrollbackHead + data.Length) % MaxScrollbackBytes;
+            _scrollbackLength = Math.Min(MaxScrollbackBytes, _scrollbackLength + data.Length);
         }
     }
 
@@ -326,8 +375,40 @@ public sealed class TerminalSession : IAsyncDisposable
     {
         lock (_scrollbackLock)
         {
-            var result = new byte[_scrollbackLength];
-            Array.Copy(_scrollbackBuffer, 0, result, 0, _scrollbackLength);
+            int length = _scrollbackLength;
+            if (length == 0)
+            {
+                return Array.Empty<byte>();
+            }
+
+            int startIndex = (_scrollbackHead - length + MaxScrollbackBytes) % MaxScrollbackBytes;
+            if (length == MaxScrollbackBytes)
+            {
+                // Skip leading UTF-8 continuation bytes (10xxxxxx) if ring buffer wrapped mid-character
+                int skipped = 0;
+                while (skipped < 3 && skipped < length)
+                {
+                    byte b = _scrollbackBuffer[(startIndex + skipped) % MaxScrollbackBytes];
+                    if ((b & 0xC0) != 0x80)
+                    {
+                        break;
+                    }
+                    skipped++;
+                }
+
+                startIndex = (startIndex + skipped) % MaxScrollbackBytes;
+                length -= skipped;
+            }
+
+            var result = new byte[length];
+            int firstCopy = Math.Min(length, MaxScrollbackBytes - startIndex);
+            Array.Copy(_scrollbackBuffer, startIndex, result, 0, firstCopy);
+            int secondCopy = length - firstCopy;
+            if (secondCopy > 0)
+            {
+                Array.Copy(_scrollbackBuffer, 0, result, firstCopy, secondCopy);
+            }
+
             return result;
         }
     }
@@ -339,12 +420,13 @@ public sealed class TerminalSession : IAsyncDisposable
     {
         lock (_scrollbackLock)
         {
-            var len = Math.Min(data.Length, MaxScrollbackBytes);
-            if (len > 0)
+            var toCopy = Math.Min(data.Length, MaxScrollbackBytes);
+            if (toCopy > 0)
             {
-                Array.Copy(data, data.Length - len, _scrollbackBuffer, 0, len);
+                Array.Copy(data, data.Length - toCopy, _scrollbackBuffer, 0, toCopy);
             }
-            _scrollbackLength = len;
+            _scrollbackHead = toCopy % MaxScrollbackBytes;
+            _scrollbackLength = toCopy;
         }
     }
 
@@ -374,10 +456,12 @@ public sealed class TerminalSession : IAsyncDisposable
     private sealed class ApiOutputCapture : IDisposable
     {
         private readonly object _lock = new();
+        private readonly Decoder _utf8Decoder = Encoding.UTF8.GetDecoder();
         private readonly StringBuilder _buffer = new();
         private readonly TimeSpan _idleTimeout;
         private readonly TaskCompletionSource<string> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private Timer? _idleTimer;
+        private bool _disposed;
 
         public ApiOutputCapture(TimeSpan idleTimeout)
         {
@@ -388,10 +472,26 @@ public sealed class TerminalSession : IAsyncDisposable
 
         public void Append(byte[] data)
         {
-            var text = Encoding.UTF8.GetString(data);
+            if (data.Length == 0)
+            {
+                return;
+            }
+
             lock (_lock)
             {
-                _buffer.Append(text);
+                if (_disposed || _completion.Task.IsCompleted)
+                {
+                    return;
+                }
+
+                var charCount = _utf8Decoder.GetCharCount(data, 0, data.Length, flush: false);
+                if (charCount > 0)
+                {
+                    var chars = new char[charCount];
+                    var written = _utf8Decoder.GetChars(data, 0, data.Length, chars, 0, flush: false);
+                    _buffer.Append(chars, 0, written);
+                }
+
                 _idleTimer ??= new Timer(_ => Complete(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
                 _idleTimer.Change(_idleTimeout, Timeout.InfiniteTimeSpan);
             }
@@ -404,7 +504,17 @@ public sealed class TerminalSession : IAsyncDisposable
 
         public void Dispose()
         {
-            _idleTimer?.Dispose();
+            lock (_lock)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+                _idleTimer?.Dispose();
+                _idleTimer = null;
+            }
         }
 
         private void Complete()
@@ -412,6 +522,19 @@ public sealed class TerminalSession : IAsyncDisposable
             string value;
             lock (_lock)
             {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                var flushCount = _utf8Decoder.GetCharCount(Array.Empty<byte>(), 0, 0, flush: true);
+                if (flushCount > 0)
+                {
+                    var flushChars = new char[flushCount];
+                    var written = _utf8Decoder.GetChars(Array.Empty<byte>(), 0, 0, flushChars, 0, flush: true);
+                    _buffer.Append(flushChars, 0, written);
+                }
+
                 value = _buffer.ToString().Trim();
             }
 

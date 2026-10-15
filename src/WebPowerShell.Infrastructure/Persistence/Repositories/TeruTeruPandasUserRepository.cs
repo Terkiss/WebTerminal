@@ -25,12 +25,13 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
         private DataFrame _users;
         private readonly System.Collections.Generic.Dictionary<Guid, User> _byIdCache = new();
         private readonly System.Collections.Generic.Dictionary<string, User> _byUsernameCache = new(StringComparer.OrdinalIgnoreCase);
-        private volatile bool _isDirty;
+        private long _mutationVersion;
+        private long _persistedVersion;
 
         /// <summary>
         /// Indicates whether the in-memory data has been modified since the last persistence.
         /// </summary>
-        public bool IsDirty => _isDirty;
+        public bool IsDirty => Interlocked.Read(ref _mutationVersion) != Interlocked.Read(ref _persistedVersion);
 
         // Column name constants
         private const string COL_ID = "Id";
@@ -179,7 +180,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                 _byIdCache[user.Id] = snapshot;
                 _byUsernameCache[user.Username] = snapshot;
 
-                _isDirty = true;
+                _mutationVersion++;
                 return Task.FromResult(Result<bool>.Success(true));
             }
             catch (Exception ex)
@@ -258,7 +259,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                 {
                     _byUsernameCache.Remove(removed.Username);
                 }
-                _isDirty = true;
+                _mutationVersion++;
                 return Task.FromResult(Result<bool>.Success(true));
             }
             catch (Exception ex)
@@ -347,10 +348,13 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
         {
             DataFrame? cleanDf = null;
             int realRowCount = 0;
+            long snapshotVersion;
 
             _lock.EnterReadLock();
             try
             {
+                snapshotVersion = _mutationVersion;
+
                 // Only persist real user rows (skip sentinel)
                 for (int i = 0; i < _users.RowCount; i++)
                 {
@@ -358,13 +362,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                         realRowCount++;
                 }
 
-                if (realRowCount == 0)
-                {
-                    _logger?.LogInformation("[MemoryPersistence] No real user data to persist.");
-                    return;
-                }
-
-                // Build a clean DataFrame without sentinel rows
+                // Build a clean DataFrame without sentinel rows (0 rows if all users deleted)
                 var cleanColumns = new Dictionary<string, IColumn>();
                 foreach (var colName in AllColumns)
                 {
@@ -388,6 +386,18 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
 
             try
             {
+                if (realRowCount == 0)
+                {
+                    if (File.Exists(dbPath) && cleanDf != null)
+                    {
+                        var connStr = $"Data Source={dbPath}";
+                        SqliteIO.ToSqlite(cleanDf, connStr, "users", ifExists: true);
+                    }
+                    Interlocked.Exchange(ref _persistedVersion, snapshotVersion);
+                    _logger?.LogInformation("[MemoryPersistence] No real user data to persist.");
+                    return;
+                }
+
                 if (cleanDf != null)
                 {
                     var dir = Path.GetDirectoryName(dbPath)!;
@@ -397,7 +407,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                     var connStr = $"Data Source={dbPath}";
                     SqliteIO.ToSqlite(cleanDf, connStr, "users", ifExists: true);
 
-                    _isDirty = false;
+                    Interlocked.Exchange(ref _persistedVersion, snapshotVersion);
                     _logger?.LogInformation("[MemoryPersistence] Persisted {Count} users to {Path}", realRowCount, dbPath);
                 }
             }
@@ -455,7 +465,7 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
                     }
                     _users = new DataFrame(columns);
                     RebuildCacheFromDataFrame();
-                    _isDirty = false;
+                    Interlocked.Exchange(ref _persistedVersion, Interlocked.Read(ref _mutationVersion));
                     _logger?.LogInformation("[MemoryPersistence] Loaded {Count} users from {Path}", loaded.RowCount, dbPath);
                 }
             }
@@ -472,6 +482,6 @@ namespace WebPowerShell.Infrastructure.Persistence.Repositories
         /// <summary>
         /// Clear the dirty flag after a successful persistence.
         /// </summary>
-        public void ClearDirtyFlag() => _isDirty = false;
+        public void ClearDirtyFlag() => Interlocked.Exchange(ref _persistedVersion, Interlocked.Read(ref _mutationVersion));
     }
 }

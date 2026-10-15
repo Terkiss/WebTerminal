@@ -26,18 +26,72 @@ public sealed class TranscriptDeltaReader
             FileAccess.Read,
             FileShare.ReadWrite | FileShare.Delete);
 
-        if (session.TranscriptOffset > stream.Length)
+        long startOffset;
+        lock (session.StateGate)
         {
-            session.TranscriptOffset = 0;
+            if (session.TranscriptOffset > stream.Length)
+            {
+                session.TranscriptOffset = 0;
+            }
+
+            startOffset = session.TranscriptOffset;
         }
 
-        stream.Seek(session.TranscriptOffset, SeekOrigin.Begin);
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
+        var remaining = stream.Length - startOffset;
+        if (remaining <= 0)
+        {
+            return TranscriptDeltaReadResult.Empty(startOffset);
+        }
 
+        stream.Seek(startOffset, SeekOrigin.Begin);
+        var buffer = new byte[remaining];
+        var bytesRead = 0;
+        while (bytesRead < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(bytesRead, buffer.Length - bytesRead), cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            bytesRead += read;
+        }
+
+        if (bytesRead == 0)
+        {
+            return TranscriptDeltaReadResult.Empty(startOffset);
+        }
+
+        int committedBytes;
+        if (buffer[bytesRead - 1] == (byte)'\n')
+        {
+            committedBytes = bytesRead;
+        }
+        else
+        {
+            var lastNewlineIndex = Array.LastIndexOf(buffer, (byte)'\n', bytesRead - 1, bytesRead);
+            var tailStart = lastNewlineIndex + 1;
+            var tailText = Encoding.UTF8.GetString(buffer, tailStart, bytesRead - tailStart);
+            if (IsCompleteTrailingLine(tailText))
+            {
+                committedBytes = bytesRead;
+            }
+            else if (lastNewlineIndex >= 0)
+            {
+                committedBytes = lastNewlineIndex + 1;
+            }
+            else
+            {
+                return TranscriptDeltaReadResult.Empty(startOffset);
+            }
+        }
+
+        var contentText = Encoding.UTF8.GetString(buffer, 0, committedBytes);
         var entries = new List<TranscriptEntry>();
-        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        foreach (var rawLine in contentText.Split('\n'))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var line = rawLine.TrimEnd('\r').TrimStart('\uFEFF');
             if (string.IsNullOrWhiteSpace(line))
             {
                 continue;
@@ -46,9 +100,42 @@ public sealed class TranscriptDeltaReader
             entries.Add(ParseLine(line));
         }
 
-        var offset = stream.Position;
-        session.TranscriptOffset = offset;
+        var offset = startOffset + committedBytes;
+        lock (session.StateGate)
+        {
+            session.TranscriptOffset = offset;
+        }
+
         return new TranscriptDeltaReadResult(entries, offset);
+    }
+
+    private static bool IsCompleteTrailingLine(string rawTrailingLine)
+    {
+        var trimmed = rawTrailingLine.Trim().TrimStart('\uFEFF');
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            return false;
+        }
+
+        if (trimmed.StartsWith('{'))
+        {
+            if (!trimmed.EndsWith('}'))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var _ = JsonDocument.Parse(trimmed);
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static TranscriptEntry ParseLine(string line)

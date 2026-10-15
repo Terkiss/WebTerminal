@@ -58,35 +58,44 @@ public static class SqliteIO
     {
         using var connection = new SqliteConnection(connectionString);
         connection.Open();
+        using var transaction = connection.BeginTransaction();
 
         // 테이블 생성
         var createTableSql = GenerateCreateTableSql(dataFrame, tableName, ifExists);
-        using (var command = new SqliteCommand(createTableSql, connection))
+        using (var command = new SqliteCommand(createTableSql, connection, transaction))
         {
             command.ExecuteNonQuery();
         }
 
         // 데이터 삽입
-        var insertSql = GenerateInsertSql(dataFrame, tableName);
-        using (var command = new SqliteCommand(insertSql, connection))
+        if (dataFrame.RowCount > 0 && dataFrame.ColumnCount > 0)
         {
+            var insertSql = GenerateInsertSql(dataFrame, tableName);
+            using var command = new SqliteCommand(insertSql, connection, transaction);
+            var parameters = new SqliteParameter[dataFrame.ColumnCount];
+            for (int col = 0; col < dataFrame.ColumnCount; col++)
+            {
+                var param = command.CreateParameter();
+                param.ParameterName = $"@p{col}";
+                command.Parameters.Add(param);
+                parameters[col] = param;
+            }
+
             for (int row = 0; row < dataFrame.RowCount; row++)
             {
-                command.Parameters.Clear();
-
                 for (int col = 0; col < dataFrame.ColumnCount; col++)
                 {
                     var columnName = dataFrame.Columns[col];
                     var column = dataFrame[columnName];
 
-                    var parameterName = $"@p{col}";
-                    var value = column.IsNA(row) ? DBNull.Value : column.GetValue(row);
-                    command.Parameters.AddWithValue(parameterName, value);
+                    parameters[col].Value = column.IsNA(row) ? DBNull.Value : (column.GetValue(row) ?? DBNull.Value);
                 }
 
                 command.ExecuteNonQuery();
             }
         }
+
+        transaction.Commit();
     }
 
     private static IColumn CreateColumnFromSqliteData(List<object?[]> rows, int columnIndex, Type columnType)

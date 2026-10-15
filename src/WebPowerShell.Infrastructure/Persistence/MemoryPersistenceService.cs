@@ -190,16 +190,20 @@ namespace WebPowerShell.Infrastructure.Persistence
                 using var conn = new Microsoft.Data.Sqlite.SqliteConnection(connStr);
                 conn.Open();
 
+                using var txn = conn.BeginTransaction();
+
                 // Create table if not exists
                 using (var cmd = new Microsoft.Data.Sqlite.SqliteCommand(
-                    "CREATE TABLE IF NOT EXISTS session_scrollback (SessionId TEXT PRIMARY KEY, Buffer BLOB)", conn))
+                    "CREATE TABLE IF NOT EXISTS session_scrollback (SessionId TEXT PRIMARY KEY, Buffer BLOB)", conn, txn))
                     cmd.ExecuteNonQuery();
 
-                // Clear and reinsert
-                using (var cmd = new Microsoft.Data.Sqlite.SqliteCommand("DELETE FROM session_scrollback", conn))
-                    cmd.ExecuteNonQuery();
+                // Clear and reinsert atomically within the transaction
+                using (var delCmd = new Microsoft.Data.Sqlite.SqliteCommand("DELETE FROM session_scrollback", conn, txn))
+                {
+                    delCmd.Transaction = txn;
+                    delCmd.ExecuteNonQuery();
+                }
 
-                using var txn = conn.BeginTransaction();
                 foreach (var session in sessions)
                 {
                     var buffer = session.GetScrollbackSnapshot();
@@ -216,6 +220,55 @@ namespace WebPowerShell.Infrastructure.Persistence
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[MemoryPersistence] Failed to persist scrollback buffers");
+            }
+        }
+
+        /// <summary>
+        /// Immediately remove a closed session and its scrollback from the persisted SQLite database
+        /// so that it does not resurrect if the user refreshes before the next 120-second snapshot.
+        /// </summary>
+        public void RemovePersistedSession(Guid sessionId)
+        {
+            if (!File.Exists(_dbPath)) return;
+
+            try
+            {
+                var connStr = $"Data Source={_dbPath}";
+                using var conn = new Microsoft.Data.Sqlite.SqliteConnection(connStr);
+                conn.Open();
+                using var txn = conn.BeginTransaction();
+
+                var sid = sessionId.ToString();
+
+                using (var checkSessions = new Microsoft.Data.Sqlite.SqliteCommand(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'", conn, txn))
+                {
+                    if (checkSessions.ExecuteScalar() != null)
+                    {
+                        using var delSessionCmd = new Microsoft.Data.Sqlite.SqliteCommand(
+                            "DELETE FROM sessions WHERE SessionId = @id", conn, txn);
+                        delSessionCmd.Parameters.AddWithValue("@id", sid);
+                        delSessionCmd.ExecuteNonQuery();
+                    }
+                }
+
+                using (var checkScrollback = new Microsoft.Data.Sqlite.SqliteCommand(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='session_scrollback'", conn, txn))
+                {
+                    if (checkScrollback.ExecuteScalar() != null)
+                    {
+                        using var delScrollbackCmd = new Microsoft.Data.Sqlite.SqliteCommand(
+                            "DELETE FROM session_scrollback WHERE SessionId = @id", conn, txn);
+                        delScrollbackCmd.Parameters.AddWithValue("@id", sid);
+                        delScrollbackCmd.ExecuteNonQuery();
+                    }
+                }
+
+                txn.Commit();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[MemoryPersistence] Failed to remove persisted session {SessionId}", sessionId);
             }
         }
 

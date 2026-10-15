@@ -9,6 +9,9 @@ public sealed class ProviderSession
     private readonly Queue<string> _acceptedRequestIds = new();
     private readonly HashSet<string> _acceptedRequestIdSet = new(StringComparer.Ordinal);
 
+    private readonly List<TranscriptEntry> _bufferedTranscriptEntries = [];
+
+    public object StateGate { get; } = new();
     public Guid SessionId { get; init; } = Guid.NewGuid();
     public Guid OwnerUserId { get; init; }
     public string Profile { get; init; } = "agy-default";
@@ -32,6 +35,42 @@ public sealed class ProviderSession
     public string? LastResponseId { get; set; }
 
     public bool IsExpired(DateTimeOffset now) => now >= ExpiresAt;
+
+    public void BufferTranscriptEntries(IEnumerable<TranscriptEntry> entries)
+    {
+        if (entries == null)
+        {
+            return;
+        }
+
+        lock (StateGate)
+        {
+            _bufferedTranscriptEntries.AddRange(entries);
+        }
+    }
+
+    public IReadOnlyList<TranscriptEntry> ConsumeBufferedTranscriptEntries()
+    {
+        lock (StateGate)
+        {
+            if (_bufferedTranscriptEntries.Count == 0)
+            {
+                return [];
+            }
+
+            var snapshot = _bufferedTranscriptEntries.ToList();
+            _bufferedTranscriptEntries.Clear();
+            return snapshot;
+        }
+    }
+
+    public void ClearBufferedTranscriptEntries()
+    {
+        lock (StateGate)
+        {
+            _bufferedTranscriptEntries.Clear();
+        }
+    }
 
     public bool TryAcceptRequestId(string? requestId)
     {

@@ -64,6 +64,8 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
     options.KnownProxies.Clear();
+    options.KnownProxies.Add(System.Net.IPAddress.Loopback);
+    options.KnownProxies.Add(System.Net.IPAddress.IPv6Loopback);
 });
 
 // User Repository: TeruTeruPandas DataFrame (in-memory) + SQLite persistence
@@ -239,11 +241,11 @@ app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapControllers();
-app.MapHub<TerminalHub>("/hubs/terminal");
-
 // Password Expiry Middleware
 app.UseMiddleware<PasswordExpiryMiddleware>();
+
+app.MapControllers();
+app.MapHub<TerminalHub>("/hubs/terminal");
 
 // Endpoints
 app.MapPost("/api/auth/login", async (LoginCommand command, LoginCommandHandler handler, HttpContext httpContext) =>
@@ -407,7 +409,7 @@ app.MapGet("/api/files/download", (string path, FileManagerService fileManagerSe
         {
             contentType = "application/octet-stream";
         }
-        return Results.File(System.IO.File.OpenRead(filePath), contentType, Path.GetFileName(filePath));
+        return TypedResults.PhysicalFile(filePath, contentType, Path.GetFileName(filePath), enableRangeProcessing: true);
     }
     catch (UnauthorizedAccessException) { return Results.Forbid(); }
     catch (Exception ex) { return Results.BadRequest(new { message = ex.Message }); }
@@ -419,13 +421,13 @@ app.MapPost("/api/files/upload", async (HttpRequest request, string? path, FileM
     try
     {
         if (!request.HasFormContentType) return Results.BadRequest(new { message = "Form content type required." });
-        var form = await request.ReadFormAsync();
+        var form = await request.ReadFormAsync(request.HttpContext.RequestAborted);
         var file = form.Files.FirstOrDefault();
         if (file != null && file.Length > 0)
         {
-            using (var stream = file.OpenReadStream())
+            await using (var stream = file.OpenReadStream())
             {
-                fileManagerService.SaveFile(path ?? "", file.FileName, stream);
+                await fileManagerService.SaveFileAsync(path ?? "", file.FileName, stream, request.HttpContext.RequestAborted);
             }
             return Results.Ok(new { success = true });
         }

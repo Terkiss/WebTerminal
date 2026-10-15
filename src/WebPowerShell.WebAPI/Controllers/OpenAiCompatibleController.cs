@@ -168,6 +168,7 @@ public sealed class OpenAiCompatibleController : ControllerBase
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(_requestTimeout);
 
+            session.ClearBufferedTranscriptEntries();
             var completion = await _runtimeManager.CompleteAsync(session, userPrompt, timeoutCts.Token);
             if (!completion.IsSuccess)
             {
@@ -180,6 +181,11 @@ public sealed class OpenAiCompatibleController : ControllerBase
                         type = "provider_error"
                     }
                 });
+            }
+
+            if (isToolResultRequest)
+            {
+                session.ExpectedToolCallIds.Clear();
             }
 
             var output = await ResolveCompletionTextAsync(session, completion.Text, cancellationToken);
@@ -287,7 +293,7 @@ public sealed class OpenAiCompatibleController : ControllerBase
             });
         }
 
-        var userPrompt = BuildAgyPromptForResponses(request, out var isToolResultRequest, out var toolCallId);
+        var userPrompt = BuildAgyPromptForResponses(request, out var isToolResultRequest, out var toolCallIds);
         if (string.IsNullOrWhiteSpace(userPrompt))
         {
             await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "PromptRequired", cancellationToken);
@@ -305,7 +311,7 @@ public sealed class OpenAiCompatibleController : ControllerBase
 
         if (isToolResultRequest)
         {
-            var validationError = await ValidateResponseToolResultAsync(session, toolCallId, cancellationToken);
+            var validationError = await ValidateResponseToolResultAsync(session, toolCallIds, cancellationToken);
             if (validationError != null)
             {
                 return validationError;
@@ -349,6 +355,7 @@ public sealed class OpenAiCompatibleController : ControllerBase
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(_requestTimeout);
 
+            session.ClearBufferedTranscriptEntries();
             var completion = await _runtimeManager.CompleteAsync(session, userPrompt, timeoutCts.Token);
             if (!completion.IsSuccess)
             {
@@ -361,6 +368,11 @@ public sealed class OpenAiCompatibleController : ControllerBase
                         type = "provider_error"
                     }
                 });
+            }
+
+            if (isToolResultRequest)
+            {
+                session.ExpectedToolCallIds.Clear();
             }
 
             var output = await ResolveCompletionTextAsync(session, completion.Text, cancellationToken);
@@ -383,14 +395,16 @@ public sealed class OpenAiCompatibleController : ControllerBase
                 null,
                 cancellationToken);
 
+            var responseId = $"resp_{Guid.NewGuid():N}";
+            session.LastResponseId = responseId;
+            _registry.Save(session);
+
             if (request.Stream)
             {
-                await WriteStreamingResponseAsync(parsed, now, cancellationToken);
+                await WriteStreamingResponseAsync(responseId, parsed, now, timeoutCts.Token);
                 return new EmptyResult();
             }
 
-            var responseId = $"resp_{Guid.NewGuid():N}";
-            session.LastResponseId = responseId;
             var outputItems = new List<object>();
 
             if (parsed.ToolCalls.Count > 0)
@@ -465,12 +479,61 @@ public sealed class OpenAiCompatibleController : ControllerBase
         }
     }
 
-    private static string? BuildAgyPromptForResponses(ResponsesRequest request, out bool isToolResultRequest, out string? toolCallId)
+    private sealed record ResponseToolOutputItem(string? CallId, string? Name, string? Content);
+
+    private static bool TryExtractResponseToolOutput(JsonElement element, out ResponseToolOutputItem item)
+    {
+        item = default!;
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (element.TryGetProperty("role", out var roleElement) &&
+            roleElement.ValueKind == JsonValueKind.String &&
+            string.Equals(roleElement.GetString(), "tool", StringComparison.OrdinalIgnoreCase))
+        {
+            string? content = element.TryGetProperty("content", out var contentElement)
+                ? ChatMessage.GetContentAsString(contentElement)
+                : null;
+            string? callId = element.TryGetProperty("tool_call_id", out var idElement)
+                ? idElement.GetString()
+                : null;
+            string? name = element.TryGetProperty("name", out var nameElement)
+                ? nameElement.GetString()
+                : null;
+            item = new ResponseToolOutputItem(callId, name, content);
+            return true;
+        }
+
+        if (element.TryGetProperty("type", out var typeElement) &&
+            typeElement.ValueKind == JsonValueKind.String &&
+            string.Equals(typeElement.GetString(), "function_call_output", StringComparison.OrdinalIgnoreCase))
+        {
+            string? content = element.TryGetProperty("output", out var outputElement)
+                ? outputElement.GetString()
+                : null;
+            string? callId = element.TryGetProperty("call_id", out var callIdElement)
+                ? callIdElement.GetString()
+                : null;
+            string? name = element.TryGetProperty("name", out var nameElement)
+                ? nameElement.GetString()
+                : null;
+            item = new ResponseToolOutputItem(callId, name, content);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string? BuildAgyPromptForResponses(
+        ResponsesRequest request,
+        out bool isToolResultRequest,
+        out IReadOnlyList<string?> toolCallIds)
     {
         isToolResultRequest = false;
-        toolCallId = null;
+        toolCallIds = [];
         string? content = null;
-        string? toolName = null;
 
         if (request.Input.ValueKind == JsonValueKind.String)
         {
@@ -481,6 +544,57 @@ public sealed class OpenAiCompatibleController : ControllerBase
             var elements = request.Input.EnumerateArray().ToList();
             if (elements.Count > 0)
             {
+                if (TryExtractResponseToolOutput(elements[^1], out _))
+                {
+                    isToolResultRequest = true;
+                    var toolItems = new List<ResponseToolOutputItem>();
+                    for (var i = elements.Count - 1; i >= 0; i--)
+                    {
+                        if (!TryExtractResponseToolOutput(elements[i], out var toolItem))
+                        {
+                            break;
+                        }
+
+                        toolItems.Add(toolItem);
+                    }
+
+                    toolItems.Reverse();
+                    toolCallIds = toolItems.Select(t => t.CallId).ToList();
+
+                    if (toolItems.Any(t => string.IsNullOrWhiteSpace(t.Content)))
+                    {
+                        return null;
+                    }
+
+                    if (toolItems.Count == 1)
+                    {
+                        var single = toolItems[0];
+                        return $"""
+Tool result received.
+tool_call_id: {single.CallId ?? "unknown"}
+name: {single.Name ?? "unknown"}
+
+{single.Content}
+
+Continue from this tool result. If another tool is needed, return the tool call JSON format exactly.
+""";
+                    }
+
+                    var toolSb = new StringBuilder();
+                    foreach (var toolItem in toolItems)
+                    {
+                        toolSb.AppendLine("Tool result received.");
+                        toolSb.AppendLine($"tool_call_id: {toolItem.CallId ?? "unknown"}");
+                        toolSb.AppendLine($"name: {toolItem.Name ?? "unknown"}");
+                        toolSb.AppendLine();
+                        toolSb.AppendLine(toolItem.Content);
+                        toolSb.AppendLine();
+                    }
+
+                    toolSb.Append("Continue from this tool result. If another tool is needed, return the tool call JSON format exactly.");
+                    return toolSb.ToString();
+                }
+
                 var lastMessage = elements[^1];
                 if (lastMessage.TryGetProperty("role", out var roleElement) && roleElement.ValueKind == JsonValueKind.String)
                 {
@@ -492,38 +606,6 @@ public sealed class OpenAiCompatibleController : ControllerBase
                             content = ChatMessage.GetContentAsString(contentElement);
                         }
                     }
-                    else if (string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase))
-                    {
-                        isToolResultRequest = true;
-                        if (lastMessage.TryGetProperty("content", out var contentElement))
-                        {
-                            content = ChatMessage.GetContentAsString(contentElement);
-                        }
-                        if (lastMessage.TryGetProperty("tool_call_id", out var idElement))
-                        {
-                            toolCallId = idElement.GetString();
-                        }
-                        if (lastMessage.TryGetProperty("name", out var nameElement))
-                        {
-                            toolName = nameElement.GetString();
-                        }
-                    }
-                }
-                if (lastMessage.TryGetProperty("type", out var typeElement) && typeElement.ValueKind == JsonValueKind.String)
-                {
-                    var type = typeElement.GetString();
-                    if (string.Equals(type, "function_call_output", StringComparison.OrdinalIgnoreCase))
-                    {
-                        isToolResultRequest = true;
-                        if (lastMessage.TryGetProperty("output", out var outputElement))
-                        {
-                            content = outputElement.GetString();
-                        }
-                        if (lastMessage.TryGetProperty("call_id", out var callIdElement))
-                        {
-                            toolCallId = callIdElement.GetString();
-                        }
-                    }
                 }
             }
         }
@@ -531,19 +613,6 @@ public sealed class OpenAiCompatibleController : ControllerBase
         if (string.IsNullOrWhiteSpace(content))
         {
             return null;
-        }
-
-        if (isToolResultRequest)
-        {
-            return $"""
-Tool result received.
-tool_call_id: {toolCallId ?? "unknown"}
-name: {toolName ?? "unknown"}
-
-{content}
-
-Continue from this tool result. If another tool is needed, return the tool call JSON format exactly.
-""";
         }
 
         var sb = new StringBuilder();
@@ -576,9 +645,8 @@ Continue from this tool result. If another tool is needed, return the tool call 
         return sb.ToString();
     }
 
-    private async Task WriteStreamingResponseAsync(ParsedAgyChatOutput parsed, long created, CancellationToken cancellationToken)
+    private async Task WriteStreamingResponseAsync(string responseId, ParsedAgyChatOutput parsed, long created, CancellationToken cancellationToken)
     {
-        var responseId = $"resp_{Guid.NewGuid():N}";
         Response.StatusCode = StatusCodes.Status200OK;
         Response.ContentType = "text/event-stream";
         Response.Headers.CacheControl = "no-cache";
@@ -792,32 +860,32 @@ Continue from this tool result. If another tool is needed, return the tool call 
             return InvalidRequest("All pending tool results must be provided.");
         }
 
-        foreach (var resultId in resultIds)
-        {
-            session.ExpectedToolCallIds.Remove(resultId);
-        }
-
         return null;
     }
 
     private async Task<IActionResult?> ValidateResponseToolResultAsync(
         ProviderSession session,
-        string? toolCallId,
+        IReadOnlyList<string?> toolCallIds,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(toolCallId) || !session.ExpectedToolCallIds.Contains(toolCallId))
+        var resultIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var toolCallId in toolCallIds)
         {
-            await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "UnknownToolCallId", cancellationToken);
-            return InvalidRequest($"Unknown or duplicate call_id: {toolCallId}");
+            if (string.IsNullOrWhiteSpace(toolCallId) ||
+                !session.ExpectedToolCallIds.Contains(toolCallId) ||
+                !resultIds.Add(toolCallId))
+            {
+                await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "UnknownToolCallId", cancellationToken);
+                return InvalidRequest($"Unknown or duplicate call_id: {toolCallId}");
+            }
         }
 
-        if (session.ExpectedToolCallIds.Count != 1)
+        if (resultIds.Count != session.ExpectedToolCallIds.Count)
         {
             await WriteAuditAsync(session, "agent.provider.responses", "Rejected", "MissingToolResults", cancellationToken);
             return InvalidRequest("All pending tool results must be provided.");
         }
 
-        session.ExpectedToolCallIds.Remove(toolCallId);
         return null;
     }
 
@@ -856,11 +924,22 @@ Continue from this tool result. If another tool is needed, return the tool call 
     {
         if (!string.IsNullOrWhiteSpace(stdoutText))
         {
+            session.ClearBufferedTranscriptEntries();
             return stdoutText;
         }
 
+        var buffered = session.ConsumeBufferedTranscriptEntries();
         var delta = await _registry.ReadTranscriptDeltaAsync(session, cancellationToken);
-        return _transcriptResponseExtractor.ExtractAssistantOutput(delta) ?? string.Empty;
+        if (buffered.Count == 0)
+        {
+            return _transcriptResponseExtractor.ExtractAssistantOutput(delta) ?? string.Empty;
+        }
+
+        var combined = new List<TranscriptEntry>(buffered.Count + delta.Entries.Count);
+        combined.AddRange(buffered);
+        combined.AddRange(delta.Entries);
+        var combinedResult = new TranscriptDeltaReadResult(combined, delta.Offset);
+        return _transcriptResponseExtractor.ExtractAssistantOutput(combinedResult) ?? string.Empty;
     }
 
     private async Task WriteAuditAsync(

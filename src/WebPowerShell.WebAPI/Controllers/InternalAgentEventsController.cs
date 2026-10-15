@@ -96,6 +96,10 @@ public sealed class InternalAgentEventsController : ControllerBase
             if (session != null)
             {
                 var delta = await _registry.ReadTranscriptDeltaAsync(session, cancellationToken);
+                if (delta.Entries.Count > 0)
+                {
+                    session.BufferTranscriptEntries(delta.Entries);
+                }
                 transcriptEntries = delta.Entries.Count;
                 transcriptOffset = delta.Offset;
             }
@@ -142,13 +146,6 @@ public sealed class InternalAgentEventsController : ControllerBase
             return false;
         }
 
-        CleanupNonces();
-        if (!SeenNonces.TryAdd($"{timestampValue}:{nonce}", timestamp))
-        {
-            failure = "Internal event nonce was already used.";
-            return false;
-        }
-
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
         var expectedBytes = hmac.ComputeHash(Encoding.UTF8.GetBytes($"{timestampValue}.{nonce}.{body}"));
         var expected = Convert.ToHexString(expectedBytes).ToLowerInvariant();
@@ -157,6 +154,13 @@ public sealed class InternalAgentEventsController : ControllerBase
                 Encoding.UTF8.GetBytes(signature.ToLowerInvariant())))
         {
             failure = "Invalid internal event signature.";
+            return false;
+        }
+
+        CleanupNonces();
+        if (!SeenNonces.TryAdd($"{timestampValue}:{nonce}", timestamp))
+        {
+            failure = "Internal event nonce was already used.";
             return false;
         }
 
