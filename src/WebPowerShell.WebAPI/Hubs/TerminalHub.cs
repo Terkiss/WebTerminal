@@ -226,6 +226,9 @@ public class TerminalHub : Hub
         return Guid.TryParse(Context.UserIdentifier, out userId);
     }
 
+    private const string BracketedPasteStart = "\u001b[200~";
+    private const string BracketedPasteEnd = "\u001b[201~";
+
     private async Task<bool> TryHandleApiServerCommandAsync(Guid userId, TerminalSession session, byte[] input)
     {
         var text = Encoding.UTF8.GetString(input);
@@ -281,8 +284,7 @@ public class TerminalHub : Hub
             }
 
             buffer.Append(ch);
-            var candidate = NormalizeApiServerCommandCandidate(buffer.ToString());
-            if (!ApiServerStartCommand.StartsWith(candidate, StringComparison.OrdinalIgnoreCase))
+            if (!IsApiServerCommandCandidatePrefix(buffer.ToString()))
             {
                 pendingFlush.Append(buffer);
                 buffer.Clear();
@@ -302,11 +304,50 @@ public class TerminalHub : Hub
         return true;
     }
 
+    private static bool IsApiServerCommandCandidatePrefix(string rawValue)
+    {
+        if (string.IsNullOrEmpty(rawValue))
+        {
+            return true;
+        }
+
+        if (BracketedPasteStart.StartsWith(rawValue, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var working = rawValue;
+        if (working.StartsWith(BracketedPasteStart, StringComparison.Ordinal))
+        {
+            working = working[BracketedPasteStart.Length..];
+        }
+
+        if (working.EndsWith(BracketedPasteEnd, StringComparison.Ordinal))
+        {
+            working = working[..^BracketedPasteEnd.Length];
+        }
+        else
+        {
+            for (var prefixLen = BracketedPasteEnd.Length - 1; prefixLen >= 1; prefixLen--)
+            {
+                var partialEnd = BracketedPasteEnd[..prefixLen];
+                if (working.EndsWith(partialEnd, StringComparison.Ordinal))
+                {
+                    working = working[..^prefixLen];
+                    break;
+                }
+            }
+        }
+
+        var candidate = working.Trim();
+        return ApiServerStartCommand.StartsWith(candidate, StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string NormalizeApiServerCommandCandidate(string value)
     {
         return value
-            .Replace("\u001b[200~", string.Empty, StringComparison.Ordinal)
-            .Replace("\u001b[201~", string.Empty, StringComparison.Ordinal)
+            .Replace(BracketedPasteStart, string.Empty, StringComparison.Ordinal)
+            .Replace(BracketedPasteEnd, string.Empty, StringComparison.Ordinal)
             .Trim();
     }
 
